@@ -10,11 +10,13 @@
   "scripts": {
     "setup": "node scripts/setup.mjs",
     "start": "node scripts/start.mjs",
+    "start:fork": "node scripts/start-fork.mjs",
     "doctor": "node scripts/doctor.mjs",
     "start:agegr": "node scripts/start-agegr.mjs",
     "start:tau": "node scripts/start-tau.mjs",
     "install:cli": "node scripts/install-cli.mjs",
-    "test:cli": "node --experimental-strip-types --test extensions/piastra/*.test.mjs"
+    "test:cli": "node --experimental-strip-types --test extensions/piastra/*.test.mjs",
+    "test:fork": "node --experimental-strip-types --test extensions/piastra/*.test.mjs scripts/start-fork.test.mjs"
   },
   "dependencies": {
     "@agegr/pi-web": "0.9.1",

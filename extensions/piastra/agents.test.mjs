@@ -4,12 +4,14 @@ import { createAgents, agentOrder } from './agents.mjs';
 
 function fixture() {
   let agents;
-  const state = { tools: [], entries: [], idle: true, status: '', model: null, thinking: null, allowed: true };
+  // Seed foreign fork tools to prove role switching strips them.
+  const state = { tools: ['terminal_create', 'edit_soft', 'subagent_spawn', 'delegator_admin'], entries: [], idle: true, status: '', model: null, thinking: null, allowed: true };
   const config = Object.fromEntries(agentOrder.map(role => [role, { model: `provider/${role}`, thinking: role === 'review' ? 'medium' : 'low' }]));
   const pi = {
     async setModel(model) { if (!state.allowed) return false; state.model = model; agents?.modelChanged({ model, source: 'set' }); return true; },
     setThinkingLevel(level) { state.thinking = level; agents?.thinkingChanged({ level }); },
     getThinkingLevel() { return state.thinking; },
+    getActiveTools() { return [...state.tools]; },
     setActiveTools(tools) { state.tools = tools; },
     appendEntry(customType, data) { state.entries.push({ type: 'custom', customType, data }); }
   };
@@ -26,6 +28,10 @@ test('cycling changes model, tools and label; review cannot write or delegate', 
     assert.equal(state.tools.includes('delegate'), role === 'orchestrator');
     assert.equal(state.tools.includes('write'), role !== 'review');
     assert.equal(state.tools.includes('bash'), role !== 'review');
+    // Unknown tools active before the role's selection must never survive it.
+    for (const tool of ['terminal_create', 'edit_soft', 'subagent_spawn', 'delegator_admin']) {
+      assert.equal(state.tools.includes(tool), false);
+    }
   }
 });
 

@@ -20,4 +20,4 @@ const config = readJson(join(root, 'config', 'agents.json'));
 for (const [role, value] of Object.entries(config)) {
   console.log(`${role}: ${value.model ?? 'MODEL NOT SELECTED'}; effort ${value.thinking ?? 'not selected'}`);
 }
-console.log('Setup stage: UI runnable; role prompts prepared; delegation integration pending.');
+console.log('Setup stage: CLI delegation active; fork UI integration staged (npm run start:fork; tests: npm run test:fork).');

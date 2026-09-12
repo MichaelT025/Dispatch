@@ -6,7 +6,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { Type } from '@earendil-works/pi-ai';
 import { createAgentSession, DefaultResourceLoader, getAgentDir, ModelRuntime, SessionManager, SettingsManager, type ExtensionAPI } from '@earendil-works/pi-coding-agent';
-import { gitArguments, validateTasks } from './policy.mjs';
+import { UPSTREAM_DELEGATION_TOOLS, gitArguments, validateTasks } from './policy.mjs';
 import { makeWorker, trackEvent, progressText } from './progress.mjs';
 import { Text } from '@earendil-works/pi-tui';
 import { createWorkerView, workerOverlayOptions } from './worker-view.ts';
@@ -79,6 +79,14 @@ export default function (pi: ExtensionAPI) {
   };
   pi.on('session_start', restoreWorkers);
   pi.on('session_tree', restoreWorkers);
+  // Single delegation system: pi-web-ui's inline subagent/delegate_task tools
+  // (registered by the fork server when its UI toggles are re-enabled) are
+  // hard-blocked here, not merely hidden in the settings panel.
+  pi.on('tool_call', async event => {
+    if ((UPSTREAM_DELEGATION_TOOLS as readonly string[]).includes(event.toolName)) {
+      return { block: true, reason: `PiAstra single delegation policy: use the delegate tool instead of ${event.toolName}.` };
+    }
+  });
   const attempt = async (work: () => Promise<void>, ctx: any) => {
     try { await work(); } catch (error: any) { ctx.ui.notify(error.message, 'error'); }
   };

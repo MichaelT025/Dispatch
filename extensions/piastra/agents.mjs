@@ -1,7 +1,19 @@
 export const agentOrder = ['orchestrator', 'general', 'fast', 'review'];
 const readTools = ['read', 'grep', 'find', 'ls', 'inspect_git', 'fetch_url'];
+const writeTools = ['bash', 'edit', 'write'];
+
+/**
+ * Exact active tool set per role (the original CLI contract). The set
+ * replaces whatever is currently active, so unknown tools — including any
+ * fork/server extras such as terminal_*, edit_soft, upstream subagent_* or
+ * other mutation/delegation tools — cannot leak into a role after switching.
+ * Model-facing terminal tools are not needed: the fork UI terminal owns its
+ * own session and does not depend on the agent's active tool set.
+ */
 export function agentTools(role) {
-  return role === 'review' ? readTools : [...readTools, 'bash', 'edit', 'write', ...(role === 'orchestrator' ? ['delegate'] : [])];
+  if (role === 'review') return [...readTools];
+  if (role === 'orchestrator') return [...readTools, ...writeTools, 'delegate'];
+  return [...readTools, ...writeTools];
 }
 
 export function createAgents(pi, config) {
