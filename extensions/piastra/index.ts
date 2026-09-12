@@ -9,7 +9,8 @@ import { createAgentSession, DefaultResourceLoader, getAgentDir, ModelRuntime, S
 import { gitArguments, validateTasks } from './policy.mjs';
 import { makeWorker, trackEvent, progressText } from './progress.mjs';
 import { Text } from '@earendil-works/pi-tui';
-import { createWorkerView } from './worker-view.ts';
+import { createWorkerView, workerOverlayOptions } from './worker-view.ts';
+import { createWorkerProgress } from './worker-render.ts';
 import { agentOrder, createAgents } from './agents.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
@@ -56,7 +57,7 @@ export default function (pi: ExtensionAPI) {
     if (viewerOpen) return;
     if (ctx.mode !== 'tui') { ctx.ui.notify('The worker viewer is available in the interactive CLI.', 'info'); return; }
     viewerOpen = true;
-    try { await ctx.ui.custom((tui: any, theme: any, _keys: any, done: any) => createWorkerView(tui, theme, done, workerViews)); }
+    try { await ctx.ui.custom((tui: any, theme: any, _keys: any, done: any) => createWorkerView(tui, theme, done, workerViews), workerOverlayOptions); }
     finally { viewerOpen = false; }
   };
   pi.registerCommand('workers', { description: 'View worker sessions and live tool output', handler: async (_args, ctx) => openWorkers(ctx) });
@@ -105,12 +106,12 @@ export default function (pi: ExtensionAPI) {
     name: 'delegate', label: 'PiAstra workers',
     description: 'Delegate bounded tasks to isolated workers. general=GLM implementation/debugging; fast=DeepSeek docs/research/precise edits; review=Astra Medium independent Git review. Include all relevant requirements; workers do not see this conversation. All supplied tasks run concurrently with no worker-count cap, including writers. Assign nonconflicting file ownership and order dependencies yourself. Returns concise results and transcript paths. No nested delegation.',
     parameters: Type.Object({ tasks: Type.Array(Type.Object({ role: Type.Union([Type.Literal('general'), Type.Literal('fast'), Type.Literal('review')]), access: Type.Union([Type.Literal('read'), Type.Literal('write')]), task: Type.String() }), { minItems: 1 }) }),
-    renderCall(args, _theme) {
-      return new Text(`PiAstra · ${args.tasks?.length || 0} workers in parallel`, 0, 0);
+    renderCall(args, theme) {
+      return new Text(theme.fg('toolTitle', `PiAstra · ${args.tasks?.length || 0} workers in parallel`), 0, 0);
     },
-    renderResult(output, { expanded }) {
+    renderResult(output, { expanded }, theme) {
       const details = output.details as any;
-      if (details?.workers) return new Text(progressText(details.workers, expanded) + (expanded ? '' : '\n\nCtrl+O: expand worker activity'), 0, 0);
+      if (details?.workers) return createWorkerProgress(details.workers, expanded, theme);
       return new Text(output.content.filter(c => c.type === 'text').map(c => c.text).join('\n'), 0, 0);
     },
     async execute(_id, params, signal, onUpdate, ctx) {
@@ -148,7 +149,8 @@ export default function (pi: ExtensionAPI) {
             ({ session } = await createAgentSession({ cwd: ctx.cwd, agentDir, modelRuntime: models, model, thinkingLevel: selected.thinking || 'off', settingsManager, resourceLoader: loader, sessionManager: manager, tools: task.access === 'write' ? ['read', 'bash', 'edit', 'write', 'grep', 'find', 'ls', 'inspect_git', 'fetch_url'] : ['read', 'grep', 'find', 'ls', 'inspect_git', 'fetch_url'], customTools: inspectTools(ctx.cwd) }));
             transcript = manager.getSessionFile();
             worker.transcript = transcript;
-            workerViews.get(worker.id).getMessages = () => session.state.messages;
+            workerViews.get(worker.id).getMessages = () => session.state.streamingMessage
+              ? [...session.state.messages, session.state.streamingMessage] : session.state.messages;
             worker.status = 'running';
             worker.activity = 'Thinking…';
             session.subscribe((event: any) => { trackEvent(worker, event); });
@@ -170,8 +172,12 @@ export default function (pi: ExtensionAPI) {
             worker.ended = Date.now();
             publish();
             if (abort) cancel.removeEventListener('abort', abort);
+            // Retain the final in-memory transcript to avoid replacing the visible
+            // stream with an empty or partially flushed file on completion.
+            const finalMessages = session ? [...session.state.messages] : undefined;
+            const record = workerViews.get(worker.id);
+            if (record && finalMessages) record.getMessages = () => finalMessages;
             session?.dispose();
-            delete workerViews.get(worker.id)?.getMessages;
           }
         }));
         return result(completed.map(r => `${r.role} · ${r.model} · ${r.ok ? 'completed' : 'FAILED'}\n${r.text}\nTranscript: ${r.transcript || '(none)'}`).join('\n\n'), { results: completed, workers });

@@ -15,8 +15,12 @@ export function trackEvent(worker, event) {
     const text = event.result?.content?.filter(c => c.type === 'text').map(c => c.text).join(' ') || '';
     if (text) line += `: ${clean(text).slice(0, 300)}`;
     worker.activity = `${event.toolName} ${event.isError ? 'failed' : 'finished'}; thinking…`;
+  } else if (event.type === 'message_start' && event.message?.role === 'assistant') {
+    worker.text = '';
   } else if (event.type === 'message_update' && event.assistantMessageEvent?.type === 'text_delta') {
-    worker.text = (worker.text + clean(event.assistantMessageEvent.delta)).slice(-1200);
+    // Keep Markdown structure intact for the themed response preview.
+    const delta = String(event.assistantMessageEvent.delta ?? '').replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '').replace(/[\x00-\x08\x0b-\x1f\x7f-\x9f]/g, '');
+    worker.text = (worker.text + delta).slice(-1200);
     worker.activity = 'Responding…';
   } else return false;
   if (line) worker.recent = [...worker.recent, line].slice(-20);
