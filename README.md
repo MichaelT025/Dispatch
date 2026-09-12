@@ -17,6 +17,10 @@ Only the orchestrator can delegate. General and fast are directly usable coding 
 
 The installer backs up your Pi settings, preserves unrelated fields, sets the default to Astra Low, and installs a standalone extension copy under `~/.pi/agent/piastra/package`. It uses your existing Pi credentials; no keys are copied into the repository. You can switch branches or move this checkout afterward. Re-run the installer to update the installed extension, prompts or model configuration. If `PI_CODING_AGENT_DIR` is set, that directory is used instead of `~/.pi/agent`; clear the variable to use the normal global installation.
 
+### CLI worktrees
+
+For worktree commands in both global Pi and the installed PiAstra CLI, install the plugin separately through Pi's user package manager: `pi install npm:@thisux/pi-worktree@1.2.0`. The PiAstra installer preserves this package setting but does not install the plugin itself. Restart Pi (or run `/reload`) to enable `/worktree ls`, `/worktree add`, `/worktree open`, `/worktree rm`, and `/worktree pr`. The package is CLI-only here: PiAstra WebUI settings, launchers, and seeding remain unchanged and do not load it.
+
 Try: “Implement this change using general workers, use fast helpers for investigation, then have the review worker independently inspect the diff against the starting commit.”
 
 One `delegate` tool provides general GLM-5.3-Flash workers, fast DeepSeek V4.1 Flash helpers, and Astra Medium review. Workers receive a fresh context containing the delegated task and project instructions, not the parent transcript. All tasks in a batch start concurrently, including editing workers, with no PiAstra worker-count cap or batch queue. Astra coordinates file ownership and dependencies. Provider rate limits still apply.
