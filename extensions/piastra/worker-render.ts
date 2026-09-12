@@ -1,5 +1,6 @@
 import { Markdown, Text, truncateToWidth } from '@earendil-works/pi-tui';
 import { getLanguageFromPath, getMarkdownTheme, highlightCode } from '@earendil-works/pi-coding-agent';
+import { highlightedDiff } from '../pi-ui/index.ts';
 
 // Sanitize external content before applying our own terminal styles.
 export function safe(text: unknown) {
@@ -44,6 +45,10 @@ export function renderTranscript(messages: any[], theme: any, width: number, exp
         lines.push(...(language ? codeLines(preview(part.text), language, width)
           : new Text(theme.fg('toolOutput', preview(part.text)), 0, 0).render(width)));
       } else lines.push(...markdownLines(preview(part.text), width));
+    }
+    if (tool && expandedTools && !message.isError && message.toolName === 'edit' && typeof message.details?.diff === 'string') {
+      const args = calls.get(message.toolCallId)?.arguments;
+      lines.push(...new Text(highlightedDiff(message.details.diff, args?.path ?? args?.file_path ?? '', theme, true), 0, 0).render(width));
     }
     lines.push('');
   }

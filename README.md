@@ -8,6 +8,8 @@ With Pi installed and signed in to Codex and OpenCode Go, run `npm run install:c
 
 Use **`/agent`** to open the agent picker, or select directly with `/agent orchestrator`, `/agent general`, `/agent fast`, or `/agent review`. **Ctrl+Shift+A** cycles in that order. The footer shows the active agent. Each selection changes model, reasoning, prompt and available tools, retaining the conversation; the selected model sees the existing history. The chosen role is restored when you resume that session. Switch after the current turn finishes or stop it first.
 
+The installer also adds lightweight syntax highlighting for edit results. For the optional Atelier sidebar with PiAstra workers and TODOs, installation commands, controls, and performance notes, see [Pi CLI appearance and sidebar](docs/pi-ui.md).
+
 **Experiment with models:** select a role with **Ctrl+Shift+A** or `/agent`, then choose a model with **Ctrl+L** (or cycle models with Ctrl+P). **Shift+Tab** changes reasoning. PiAstra remembers these choices per role in the current session, restores them on resume, and uses them for future delegated workers of that role. Running workers keep their launch settings. `/piastra` shows the current choices. A new session starts from `config/agents.json`; these overrides do not change other sessions or the configuration file.
 
 Only the orchestrator can delegate. General and fast are directly usable coding agents; review has read-only inspection tools. Delegated workers still use fresh isolated contexts regardless of manual switching.

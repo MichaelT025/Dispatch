@@ -12,6 +12,7 @@ import { Text } from '@earendil-works/pi-tui';
 import { createWorkerView, workerOverlayOptions } from './worker-view.ts';
 import { createWorkerProgress } from './worker-render.ts';
 import { agentOrder, createAgents } from './agents.mjs';
+import { createWorkerSidebar } from './sidebar.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const config = JSON.parse(readFileSync(path.join(root, 'config/agents.json'), 'utf8'));
@@ -51,6 +52,8 @@ export default function (pi: ExtensionAPI) {
   let runtime: Promise<ModelRuntime> | undefined;
   const agents = createAgents(pi, config);
   const workerViews = new Map<number, any>();
+  const sidebar = createWorkerSidebar(pi.events, workerViews);
+  pi.on('session_shutdown', async () => sidebar.dispose());
   let nextWorkerId = 0;
   let viewerOpen = false;
   const openWorkers = async (ctx: any) => {
@@ -62,7 +65,7 @@ export default function (pi: ExtensionAPI) {
   };
   pi.registerCommand('workers', { description: 'View worker sessions and live tool output', handler: async (_args, ctx) => openWorkers(ctx) });
   pi.registerShortcut('ctrl+shift+w', { description: 'Open live worker sessions', handler: openWorkers });
-  pi.on('session_start', async (_event, ctx) => {
+  const restoreWorkers = async (_event: any, ctx: any) => {
     workerViews.clear(); nextWorkerId = 0;
     for (const entry of ctx.sessionManager.getBranch() as any[]) {
       if (entry.type !== 'message' || entry.message?.role !== 'toolResult' || entry.message.toolName !== 'delegate') continue;
@@ -72,7 +75,10 @@ export default function (pi: ExtensionAPI) {
         workerViews.set(worker.id, { worker }); nextWorkerId = Math.max(nextWorkerId, worker.id);
       }
     }
-  });
+    sidebar.publish();
+  };
+  pi.on('session_start', restoreWorkers);
+  pi.on('session_tree', restoreWorkers);
   const attempt = async (work: () => Promise<void>, ctx: any) => {
     try { await work(); } catch (error: any) { ctx.ui.notify(error.message, 'error'); }
   };
@@ -122,7 +128,10 @@ export default function (pi: ExtensionAPI) {
       const selections = params.tasks.map(task => agents.selection(task.role));
       const workers = params.tasks.map((task, index) => makeWorker(task, nextWorkerId++, selections[index].model));
       workers.forEach(worker => workerViews.set(worker.id, { worker }));
-      const publish = () => onUpdate?.(result(progressText(workers), { workers: workers.map(w => ({ ...w, recent: [...w.recent] })) }));
+      const publish = () => {
+        sidebar.publish();
+        onUpdate?.(result(progressText(workers), { workers: workers.map(w => ({ ...w, recent: [...w.recent] })) }));
+      };
       const ticker = setInterval(publish, 250);
       publish();
       try {

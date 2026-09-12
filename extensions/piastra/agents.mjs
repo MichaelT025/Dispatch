@@ -33,7 +33,10 @@ export function createAgents(pi, config) {
         const model = ctx.modelRegistry.find(selection.model.slice(0, slash), selection.model.slice(slash + 1));
         if (!model || !await pi.setModel(model)) throw new Error(`Cannot activate ${selection.model}. Previous agent retained; no fallback used.`);
         pi.setThinkingLevel(selection.thinking || 'off');
-        pi.setActiveTools(agentTools(role));
+        // Preserve the optional session planner without admitting other plugins'
+        // delegation or write tools into a role's allowlist.
+        const planner = pi.getAllTools?.().some(tool => tool.name === 'todo') ? ['todo'] : [];
+        pi.setActiveTools([...agentTools(role), ...planner]);
         active = role;
         if (persist) save();
         ctx.ui.setStatus('piastra-agent', `Agent: ${role}`);

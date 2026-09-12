@@ -28,6 +28,18 @@ test('cycling changes model, tools and label; review cannot write or delegate', 
     assert.equal(state.tools.includes('bash'), role !== 'review');
   }
 });
+
+test('optional TODO planner survives role switches without enabling unrelated plugin tools', async () => {
+  const { agents, pi, ctx, state } = fixture();
+  pi.getAllTools = () => ['todo', 'subagent', 'code_rewrite'].map(name => ({ name }));
+  for (const role of agentOrder) {
+    await agents.select(role, ctx);
+    assert.ok(state.tools.includes('todo'));
+    assert.ok(!state.tools.includes('subagent'));
+    assert.ok(!state.tools.includes('code_rewrite'));
+    if (role === 'review') assert.ok(!state.tools.includes('write'));
+  }
+});
 test('busy or unavailable switching retains the previous agent', async () => {
   const { agents, ctx, state } = fixture();
   await agents.select('review', ctx);

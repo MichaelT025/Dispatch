@@ -12,14 +12,15 @@ try {
   await copyFile(target, `${target}.piastra-backup-${Date.now()}`);
 } catch (error) { if (error.code !== 'ENOENT') throw error; }
 const installed = path.join(agentDir, 'piastra', 'package');
-for (const dir of ['extensions/piastra', 'config', 'roles']) await mkdir(path.join(installed, dir), { recursive: true });
-for (const file of ['extensions/piastra/index.ts', 'extensions/piastra/policy.mjs', 'extensions/piastra/agents.mjs', 'extensions/piastra/progress.mjs', 'extensions/piastra/worker-view.ts', 'extensions/piastra/worker-render.ts', 'config/agents.json', ...['orchestrator', 'general', 'fast', 'review'].map(role => `roles/${role}.md`)]) {
+for (const dir of ['extensions/piastra', 'extensions/pi-ui', 'config', 'roles']) await mkdir(path.join(installed, dir), { recursive: true });
+for (const file of ['extensions/piastra/index.ts', 'extensions/piastra/policy.mjs', 'extensions/piastra/agents.mjs', 'extensions/piastra/progress.mjs', 'extensions/piastra/sidebar.mjs', 'extensions/piastra/worker-view.ts', 'extensions/piastra/worker-render.ts', 'config/agents.json', ...['orchestrator', 'general', 'fast', 'review'].map(role => `roles/${role}.md`)]) {
   await copyFile(path.join(root, file), path.join(installed, file));
 }
 await writeFile(path.join(installed, 'package.json'), JSON.stringify({ name: 'piastra-user-extension', private: true, type: 'module' }) + '\n');
+await copyFile(path.join(root, 'extensions/pi-ui/index.ts'), path.join(installed, 'extensions/pi-ui/index.ts'));
 const extension = path.join(installed, 'extensions', 'piastra', 'index.ts');
 const developmentPath = path.join(root, 'extensions', 'piastra', 'index.ts');
-settings.extensions = [...new Set([...(settings.extensions || []).filter(p => p !== developmentPath), extension])];
+settings.extensions = [...new Set([...(settings.extensions || []).filter(p => p !== developmentPath), extension, path.join(installed, 'extensions/pi-ui/index.ts')])];
 const config = JSON.parse(await readFile(path.join(root, 'config/agents.json'), 'utf8')).orchestrator;
 const slash = config.model.indexOf('/');
 settings.defaultProvider = config.model.slice(0, slash);
