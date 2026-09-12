@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { initTheme } from '@earendil-works/pi-coding-agent';
 import { stripTerminalSequences, visibleWidth, TuiMainScreen } from '@earendil-works/pi-tui';
-import { renderTranscript } from './worker-render.ts';
+import { renderTranscript, toolSummary } from './worker-render.ts';
 initTheme('dark');
 import { createWorkerView, messageText, workerOverlayOptions } from './worker-view.ts';
 test('viewer navigates workers and returns to parent without mutating sessions', () => {
@@ -53,6 +53,12 @@ test('paused streaming viewport and sibling reading positions remain stable', ()
   } finally { view.dispose(); }
 });
 
+test('tool summaries keep queries, scopes, and unknown names safe', () => {
+  assert.equal(toolSummary('grep', { pattern: 'needle', path: 'src' }), 'Search needle in src');
+  assert.equal(toolSummary('find', { pattern: '*.ts', path: 'src' }), 'Find *.ts in src');
+  assert.equal(toolSummary('mystery\n\\x1b[31m', { path: 'a.ts' }), 'mystery \\x1b[31m a.ts');
+});
+
 test('transcripts highlight source, collapse tools, and retain errors', () => {
   const messages = [
     { role: 'assistant', content: [{ type: 'thinking', thinking: 'private thought' }, { type: 'toolCall', id: 'r', name: 'read', arguments: { path: 'a.ts' } }] },
@@ -66,7 +72,26 @@ test('transcripts highlight source, collapse tools, and retain errors', () => {
   assert.doesNotMatch(expanded, /private thought/);
   const collapsed = renderTranscript(messages, theme, 80, false).join('\n');
   assert.match(collapsed, /Ctrl\+O to expand/);
+  assert.match(collapsed, /const answer = 42/);
   assert.match(collapsed, /critical second line/);
+});
+
+test('collapsed results keep output visible beside long targets and pair calls', () => {
+  const path = 'a/'.repeat(150) + 'result.txt';
+  const rendered = stripTerminalSequences(renderTranscript([
+    { role: 'assistant', content: [{ type: 'toolCall', id: 'r', name: 'read', arguments: { path } }] },
+    { role: 'toolResult', toolCallId: 'r', toolName: 'read', content: [{ type: 'text', text: 'IMPORTANT RESULT' }] },
+  ], { fg: (_s, t) => t }, 50, false).join('\n'));
+  assert.match(rendered, /IMPORTANT RESULT/);
+  assert.match(rendered, /Read/);
+});
+
+test('collapsed failures retain their output and status', () => {
+  const rendered = stripTerminalSequences(renderTranscript([
+    { role: 'toolResult', toolName: 'mystery', isError: true, content: [{ type: 'text', text: 'critical failure' }] }
+  ], { fg: (_s, t) => t }, 50, false).join('\n'));
+  assert.match(rendered, /✗ mystery/);
+  assert.match(rendered, /critical failure/);
 });
 
 
