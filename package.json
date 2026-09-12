@@ -12,7 +12,9 @@
     "start": "node scripts/start.mjs",
     "doctor": "node scripts/doctor.mjs",
     "start:agegr": "node scripts/start-agegr.mjs",
-    "start:tau": "node scripts/start-tau.mjs"
+    "start:tau": "node scripts/start-tau.mjs",
+    "install:cli": "node scripts/install-cli.mjs",
+    "test:cli": "node --test extensions/piastra/*.test.mjs"
   },
   "dependencies": {
     "@agegr/pi-web": "0.9.1",
