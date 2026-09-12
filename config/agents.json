@@ -1,0 +1,6 @@
+{
+  "orchestrator": { "model": "openai-codex/gpt-6-astra", "thinking": "low" },
+  "general": { "model": "opencode-go/glm-5.3-flash", "thinking": null },
+  "fast": { "model": "opencode-go/deepseek-v4.1-flash", "thinking": null },
+  "review": { "model": "openai-codex/gpt-6-astra", "thinking": "medium" }
+}
