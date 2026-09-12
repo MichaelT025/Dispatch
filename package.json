@@ -12,12 +12,18 @@
     "start": "node scripts/start.mjs",
     "doctor": "node scripts/doctor.mjs",
     "start:agegr": "node scripts/start-agegr.mjs",
-    "start:tau": "node scripts/start-tau.mjs"
+    "start:tau": "node scripts/start-tau.mjs",
+    "start:dsh": "node scripts/start-dsh.mjs",
+    "test:web": "node --test web/server/*.test.mjs"
   },
   "dependencies": {
     "@agegr/pi-web": "0.9.1",
     "@earendil-works/pi-coding-agent": "0.84.4",
+    "esbuild": "0.25.12",
     "pi-web-ui": "0.80.0",
+    "react": "19.2.4",
+    "react-dom": "19.2.4",
+    "react-markdown": "10.1.0",
     "tau-mirror": "1.0.9"
   },
   "overrides": {

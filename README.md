@@ -59,3 +59,20 @@ If no credentials are available, sign in with the installed Pi CLI using `.local
 Implement and verify per-role effort, explicit model selection without fallback, reviewer read/Git access, child spawning restrictions, and concurrent fast helpers with serialized writes. Reuse upstream subagent lifecycle and UI wherever possible. A full milestone run is the acceptance check; the installed UI alone does not prove orchestration works.
 
 See [the design brief](IMPLEMENTATION_BRIEF.md) for the agreed direction and open choices.
+# DSH-style UI prototype
+
+Run `npm run start:dsh` from this repository, then open http://127.0.0.1:8789.
+Run `npm run setup -- --import-auth` first if the local Pi credentials have not been seeded yet.
+
+This is the current UI direction on `feat/dsh-pi-webui`: a small React shell connected directly to Pi's SDK, with DSH design tokens and DSH-better-sidebar's real syntax-highlighted file/diff renderer. Upstream attribution and pinned source revisions are in `web/vendor/README.md`. No fork of Pi or DSH's runtime is required.
+
+Available now:
+- Streaming chat, stop, model selection for new chats, and reopening saved Pi conversations.
+- Project file browsing with read-only text previews.
+- Combined staged/unstaged changes against HEAD, plus untracked text files, with line numbers and inline change highlighting.
+
+The server binds to loopback, checks Host/Origin, and uses the ignored `.local/agent` credentials and `.local/dsh-sessions` store. Browser previews are constrained to the repository and omit private state, environment files, binaries and files over 500 KB. Pi's coding tools retain their normal host permissions; this is a trusted local development UI, not an agent sandbox or a remote multi-user service. Extensions and skills are disabled for this first adapter.
+
+Still to add: delegation, file editing, per-file review comments, expanded tool transcripts, rich image/PDF previews, and Git context-fold expansion. The Git pane currently shows the net change against HEAD, not separate index/worktree patches. Restart the launcher to rebuild after source edits. The earlier UI launchers below remain available for comparison.
+
+Validation: `npm run test:web`. The first live smoke test successfully returned a short Astra response through Pi; model-heavy coding and multi-agent flows are not yet validated.
