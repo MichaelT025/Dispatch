@@ -1,8 +1,11 @@
 # PiAstra — Design Brief
 
-**Status:** Repository and local UI setup started; delegation integration pending  
-**Target machine:** `LEGIONX`  
-**Project path:** `C:\Users\micha\Documents\Projects\Personal\PiAstra`  
+**Status:** Repository and local UI setup started; delegation integration pending
+
+**Target machine:** `LEGIONX`
+
+**Project path:** `C:\Users\micha\Documents\Projects\Personal\PiAstra`
+
 **WSL equivalent:** `/mnt/c/Users/micha/Documents/Projects/Personal/PiAstra`
 
 ## Direction
