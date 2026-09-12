@@ -2,6 +2,34 @@
 
 A lightweight Pi setup with Astra planning, OpenCode Go workers, and Astra milestone review.
 
+## Use from any directory
+
+With Pi installed and signed in to Codex and OpenCode Go, run `npm run install:cli` once from this checkout. Then open a terminal in any project and run **`pi`**. `/piastra` shows the role configuration. Restart existing Pi sessions after installation.
+
+Use **`/agent`** to open the agent picker, or select directly with `/agent orchestrator`, `/agent general`, `/agent fast`, or `/agent review`. **Ctrl+Shift+A** cycles in that order. The footer shows the active agent. Each selection changes model, reasoning, prompt and available tools, retaining the conversation; the selected model sees the existing history. The chosen role is restored when you resume that session. Switch after the current turn finishes or stop it first.
+
+The installer also adds lightweight syntax highlighting for edit results. For the optional Atelier sidebar with PiAstra workers and TODOs, installation commands, controls, and performance notes, see [Pi CLI appearance and sidebar](docs/pi-ui.md).
+
+**Experiment with models:** select a role with **Ctrl+Shift+A** or `/agent`, then choose a model with **Ctrl+L** (or cycle models with Ctrl+P). **Shift+Tab** changes reasoning. PiAstra remembers these choices per role in the current session, restores them on resume, and uses them for future delegated workers of that role. Running workers keep their launch settings. `/piastra` shows the current choices. A new session starts from `config/agents.json`; these overrides do not change other sessions or the configuration file.
+
+Only the orchestrator can delegate. General and fast are directly usable coding agents; review has read-only inspection tools. Delegated workers still use fresh isolated contexts regardless of manual switching.
+
+The installer backs up your Pi settings, preserves unrelated fields, sets the default to Astra Low, and installs a standalone extension copy under `~/.pi/agent/piastra/package`. It uses your existing Pi credentials; no keys are copied into the repository. You can switch branches or move this checkout afterward. Re-run the installer to update the installed extension, prompts or model configuration. If `PI_CODING_AGENT_DIR` is set, that directory is used instead of `~/.pi/agent`; clear the variable to use the normal global installation.
+
+Try: “Implement this change using general workers, use fast helpers for investigation, then have the review worker independently inspect the diff against the starting commit.”
+
+One `delegate` tool provides general GLM-5.3-Flash workers, fast DeepSeek V4.1 Flash helpers, and Astra Medium review. Workers receive a fresh context containing the delegated task and project instructions, not the parent transcript. All tasks in a batch start concurrently, including editing workers, with no PiAstra worker-count cap or batch queue. Astra coordinates file ownership and dependencies. Provider rate limits still apply.
+
+**Watch workers:** press **Ctrl+Shift+W** while they run, or use **`/workers`**. In the picker, Up/Down selects a worker and Enter opens it. Inside a worker, Left/Right (or Tab/Shift+Tab) switches siblings, Up returns to the parent, and Down opens the picker. PageUp/PageDown scrolls a page; j/k scrolls a line; Home goes to the start; End follows live output. Escape always returns to the parent. **Ctrl+O** expands or collapses tool details; failed tool output remains visible. Each worker remembers its reading position while you switch siblings; incoming output leaves a paused view in place. The fixed terminal overlay shows themed Markdown, highlighted code blocks and tool arguments, and source highlighting for file reads. Workers continue running while the viewer is open. This is an inspection view, not an input box for messaging children. Saved worker views are available after resuming their parent session. Large individual content blocks are previewed up to 30,000 characters; the displayed transcript path contains the complete record.
+
+The main delegation card also shows each worker's current tool, target file/command, status and elapsed time in the active theme. **Ctrl+O** expands a bounded preview of recent activity and Markdown response excerpts; use **Ctrl+Shift+W** for the full worker view. This UI activity stays out of the orchestrator's final tool-result text; it still receives concise worker results.
+
+Read-only workers have read/find/grep/ls, an argument-restricted Git inspector and URL fetching. They have no shell, edit, write, extensions or nested delegation. General/fast workers with write access also have shell/edit/write and can run tests. Git review accepts a supplied milestone baseline; reviews do not execute tests. These are tool restrictions, not an OS filesystem sandbox. Worker transcripts are saved in `~/.pi/agent/piastra/runs`; the parent receives a capped summary and transcript path. Cancellation propagates to workers, with a 15-minute per-worker timeout. Model errors are returned explicitly, never replaced with Astra. Non-Astra workers request thinking off; Pi clamps this to model-supported levels (GLM currently uses Low).
+
+Validation: `npm run test:cli` checks dispatch policy, worker navigation/progress and Git argument restrictions. `node scripts/smoke-cli.mjs` is an opt-in live test that consumes provider usage, creates a temporary Git project, and exercises a general edit, parallel fast helpers and independent review. Its local transcript is in `.local/cli-smoke.jsonl`.
+
+To uninstall, remove the PiAstra entry from the `extensions` array in your Pi settings and restore your preferred model defaults from the timestamped settings backup. Installed files and worker transcripts can remain until you choose to remove them.
+
 ## Preferred UI trial: Tau
 
 Run `npm run start:tau` in a terminal and open http://127.0.0.1:3001. [Tau](https://github.com/deflating/tau) runs as an extension inside Pi and mirrors the active session. Keep that terminal running. It is the preferred trial for a minimal chat interface; historical sessions are read-only in its browser view, unlike agegr's fuller session manager.
@@ -35,7 +63,7 @@ The Express dependency has a scoped `qs` 6.16.0 override for GHSA-x5fp-wj9c-mxmx
 
 Repository setup is implemented. The upstream web UI runs locally with isolated settings and authentication. Role prompts are prepared in `roles/`; model choices are in `config/agents.json`.
 
-**The multi-agent workflow is not active yet.** Templates are deliberately disabled. Inspection of pi-web-ui 0.80.0 found that template normalization does not retain per-role reasoning settings, and unavailable worker models can fall back to the parent model. Tool scopes also need runtime enforcement; a read-only prompt alone is insufficient. These must be covered by a small integration and verified before enabling delegation. No upstream fork is currently planned.
+**CLI delegation is active through the user extension described above.** The older UI templates remain disabled; they are a separate integration. No upstream fork is required.
 
 ## Run
 
@@ -56,6 +84,6 @@ If no credentials are available, sign in with the installed Pi CLI using `.local
 
 ## Next implementation step
 
-Implement and verify per-role effort, explicit model selection without fallback, reviewer read/Git access, child spawning restrictions, and concurrent fast helpers with serialized writes. Reuse upstream subagent lifecycle and UI wherever possible. A full milestone run is the acceptance check; the installed UI alone does not prove orchestration works.
+Connect the web UI to the same delegation extension. The CLI workflow is available independently of the UI trials.
 
 See [the design brief](IMPLEMENTATION_BRIEF.md) for the agreed direction and open choices.
