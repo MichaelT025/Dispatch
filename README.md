@@ -25,6 +25,19 @@ Try: “Implement this change using general workers, use fast helpers for invest
 
 One `delegate` tool provides general GLM-5.3-Flash workers, fast DeepSeek V4.1 Flash helpers, and Astra Medium review. Workers receive a fresh context containing the delegated task and project instructions, not the parent transcript. All tasks in a batch start concurrently, including editing workers, with no PiAstra worker-count cap or batch queue. Astra coordinates file ownership and dependencies. Provider rate limits still apply.
 
+### How work is divided
+
+The orchestrator is the user's main collaborator and the only role that may spawn workers. It keeps the conversation and the user's decisions, plans the work, assigns clear file ownership, orders dependencies, and decides when a milestone is ready for review. It can read a source itself when a decision depends on it, but bulk investigation and execution are delegated to keep the main context focused. It never claims completion or passing tests from a worker summary alone.
+
+| Role | Owns | Access |
+| --- | --- | --- |
+| Orchestrator | User dialogue, planning, delegation, milestone review, final verification | Read tools plus bash/edit/write and `delegate` |
+| General worker | Implementation, debugging, repair, running tests and checks | Read/write |
+| Fast worker | Bounded research, code/documentation search, precise edits | Read/write |
+| Review worker | Independent Git review of a milestone against its baseline | Read-only |
+
+Workers are isolated: each sees only its supplied task and project instructions, not the parent conversation, and none may delegate further. Task access is enforced by tool set — read-only workers have no shell, edit or write; write-capable workers can also run tests. Valid review findings are routed back to general or fast workers for repair, and another review is requested only when the findings or later changes justify it. There is no automatic review-until-approved loop.
+
 **Watch workers:** press **Ctrl+Shift+W** while they run, or use **`/workers`**. In the picker, Up/Down selects a worker and Enter opens it. Inside a worker, Left/Right (or Tab/Shift+Tab) switches siblings, Up returns to the parent, and Down opens the picker. PageUp/PageDown scrolls a page; j/k scrolls a line; Home goes to the start; End follows live output. Escape always returns to the parent. **Ctrl+O** expands or collapses tool details; failed tool output remains visible. Each worker remembers its reading position while you switch siblings; incoming output leaves a paused view in place. The fixed terminal overlay shows themed Markdown, highlighted code blocks and tool arguments, and source highlighting for file reads. Workers continue running while the viewer is open. This is an inspection view, not an input box for messaging children. Saved worker views are available after resuming their parent session. Large individual content blocks are previewed up to 30,000 characters; the displayed transcript path contains the complete record.
 
 The main delegation card also shows each worker's current tool, target file/command, status and elapsed time in the active theme. **Ctrl+O** expands a bounded preview of recent activity and Markdown response excerpts; use **Ctrl+Shift+W** for the full worker view. This UI activity stays out of the orchestrator's final tool-result text; it still receives concise worker results.
