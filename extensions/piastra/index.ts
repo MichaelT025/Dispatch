@@ -7,6 +7,7 @@ import { promisify } from 'node:util';
 import { Type } from '@earendil-works/pi-ai';
 import { createAgentSession, DefaultResourceLoader, getAgentDir, ModelRuntime, SessionManager, SettingsManager, type ExtensionAPI } from '@earendil-works/pi-coding-agent';
 import { createQueue, gitArguments, validateTasks } from './policy.mjs';
+import { agentOrder, createAgents } from './agents.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const config = JSON.parse(readFileSync(path.join(root, 'config/agents.json'), 'utf8'));
@@ -45,12 +46,34 @@ function inspectTools(cwd: string) {
 
 export default function (pi: ExtensionAPI) {
   let runtime: Promise<ModelRuntime> | undefined;
-  pi.on('before_agent_start', async event => ({ systemPrompt: `${event.systemPrompt}\n\n${rolePrompt('orchestrator')}\nUse delegate for bounded tasks. A batch accepts up to three read-only helpers; editing and review each use a single-task batch. Workers receive only the task you supply, plus project instructions, never the parent conversation. Include requirements, useful paths, and the exact milestone Git baseline for reviews. While a batch is running do not edit the same workspace yourself. Worker read access excludes shell, write and edit; it includes inspect_git and fetch_url. For test execution use a write-capable general worker. Full worker transcripts are saved outside the project. Do not read them unless the concise result is insufficient.` }));
+  const agents = createAgents(pi, config);
+  const attempt = async (work: () => Promise<void>, ctx: any) => {
+    try { await work(); } catch (error: any) { ctx.ui.notify(error.message, 'error'); }
+  };
+  // These tools are also available to the manually selected review agent.
+  for (const tool of inspectTools('')) pi.registerTool({ ...tool, execute: (id: string, params: any, signal: any, _update: any, ctx: any) => inspectTools(ctx.cwd).find(t => t.name === tool.name)!.execute(id, params, signal) });
+  pi.on('session_start', async (_event, ctx) => attempt(() => agents.restore(ctx), ctx));
+  pi.on('session_tree', async (_event, ctx) => attempt(() => agents.restore(ctx), ctx));
+  pi.registerCommand('agent', {
+    description: 'Select PiAstra agent: orchestrator, general, fast, review',
+    handler: async (args, ctx) => {
+      const role = args.trim().toLowerCase() || (ctx.hasUI ? await ctx.ui.select(`Agent: ${agents.active}`, agentOrder) : undefined);
+      if (role) await attempt(() => agents.select(role, ctx), ctx);
+      else if (!ctx.hasUI) ctx.ui.notify(`Active: ${agents.active}. Use /agent ${agentOrder.join('|')}`, 'info');
+    }
+  });
+  pi.registerShortcut('ctrl+shift+a', { description: 'Cycle PiAstra agent', handler: async ctx => attempt(() => agents.cycle(ctx), ctx) });
+  pi.on('before_agent_start', async event => {
+    const instructions = agents.active === 'orchestrator'
+      ? 'Use delegate for bounded tasks. A batch accepts up to three read-only helpers; editing and review each use a single-task batch. Workers receive only the task you supply, plus project instructions, never the parent conversation. Include requirements, useful paths, and the exact milestone Git baseline for reviews. While a batch is running do not edit the same workspace yourself. Worker read access excludes shell, write and edit; it includes inspect_git and fetch_url. For test execution use a write-capable general worker. Full worker transcripts are saved outside the project. Do not read them unless the concise result is insufficient.'
+      : 'You are the directly selected main agent, working with the user in this conversation. Treat the current user request as your task. Answer the user directly; do not wait for an orchestrator or delegate to other agents. Earlier conversation may come from other roles; follow your current role and tool permissions.';
+    return { systemPrompt: `${event.systemPrompt}\n\nActive PiAstra agent: ${agents.active}\n${rolePrompt(agents.active)}\n${instructions}` };
+  });
   pi.registerCommand('piastra', {
     description: 'Show PiAstra roles and delegation availability',
     handler: async (_args, ctx) => {
       const summary = Object.entries(config).map(([name, value]: [string, any]) => `${name}: ${value.model}${value.thinking ? ` (${value.thinking})` : ''}`).join('\n');
-      ctx.ui.notify(`${summary}\nCWD: ${ctx.cwd}\nDelegate: up to 3 read-only helpers; serial edits/review.`, 'info');
+      ctx.ui.notify(`Active: ${agents.active}\n${summary}\nCWD: ${ctx.cwd}\n/agent selects; Ctrl+Shift+A cycles.\nDelegate: up to 3 read-only helpers; serial edits/review.`, 'info');
     }
   });
   pi.registerTool({
@@ -58,6 +81,7 @@ export default function (pi: ExtensionAPI) {
     description: 'Delegate bounded tasks to isolated workers. general=GLM implementation/debugging; fast=DeepSeek docs/research/precise edits; review=Astra Medium independent Git review. Include all relevant requirements; workers do not see this conversation. Up to 3 read-only tasks together. Write or review requires one task. Returns concise results and transcript paths. No nested delegation.',
     parameters: Type.Object({ tasks: Type.Array(Type.Object({ role: Type.Union([Type.Literal('general'), Type.Literal('fast'), Type.Literal('review')]), access: Type.Union([Type.Literal('read'), Type.Literal('write')]), task: Type.String() }), { minItems: 1, maxItems: 3 }) }),
     async execute(_id, params, signal, onUpdate, ctx) {
+      if (agents.active !== 'orchestrator') throw new Error('Only the orchestrator can delegate.');
       validateTasks(params.tasks);
       return enqueue(async () => {
         signal?.throwIfAborted();

@@ -6,6 +6,10 @@ A lightweight Pi setup with Astra planning, OpenCode Go workers, and Astra miles
 
 With Pi installed and signed in to Codex and OpenCode Go, run `npm run install:cli` once from this checkout. Then open a terminal in any project and run **`pi`**. `/piastra` shows the role configuration. Restart existing Pi sessions after installation.
 
+Use **`/agent`** to open the agent picker, or select directly with `/agent orchestrator`, `/agent general`, `/agent fast`, or `/agent review`. **Ctrl+Shift+A** cycles in that order. The footer shows the active agent. Each selection changes model, reasoning, prompt and available tools, retaining the conversation; the selected model sees the existing history. The chosen role is restored when you resume that session. Switch after the current turn finishes or stop it first.
+
+Only the orchestrator can delegate. General and fast are directly usable coding agents; review has read-only inspection tools. Delegated workers still use fresh isolated contexts regardless of manual switching.
+
 The installer backs up your Pi settings, preserves unrelated fields, sets the default to Astra Low, and installs a standalone extension copy under `~/.pi/agent/piastra/package`. It uses your existing Pi credentials; no keys are copied into the repository. You can switch branches or move this checkout afterward. Re-run the installer to update the installed extension, prompts or model configuration. If `PI_CODING_AGENT_DIR` is set, that directory is used instead of `~/.pi/agent`; clear the variable to use the normal global installation.
 
 Try: “Implement this change using general workers, use fast helpers for investigation, then have the review worker independently inspect the diff against the starting commit.”
