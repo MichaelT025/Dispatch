@@ -80,6 +80,8 @@ export default function (pi: ExtensionAPI) {
   for (const tool of inspectTools('')) pi.registerTool({ ...tool, execute: (id: string, params: any, signal: any, _update: any, ctx: any) => inspectTools(ctx.cwd).find(t => t.name === tool.name)!.execute(id, params, signal) });
   pi.on('session_start', async (_event, ctx) => attempt(() => agents.restore(ctx), ctx));
   pi.on('session_tree', async (_event, ctx) => attempt(() => agents.restore(ctx), ctx));
+  pi.on('model_select', event => agents.modelChanged(event));
+  pi.on('thinking_level_select', event => agents.thinkingChanged(event));
   pi.registerCommand('agent', {
     description: 'Select PiAstra agent: orchestrator, general, fast, review',
     handler: async (args, ctx) => {
@@ -98,13 +100,13 @@ export default function (pi: ExtensionAPI) {
   pi.registerCommand('piastra', {
     description: 'Show PiAstra roles and delegation availability',
     handler: async (_args, ctx) => {
-      const summary = Object.entries(config).map(([name, value]: [string, any]) => `${name}: ${value.model}${value.thinking ? ` (${value.thinking})` : ''}`).join('\n');
+      const summary = agentOrder.map(name => { const value = agents.selection(name); return `${name}: ${value.model}${value.thinking ? ` (${value.thinking})` : ''}`; }).join('\n');
       ctx.ui.notify(`Active: ${agents.active}\n${summary}\nCWD: ${ctx.cwd}\n/agent selects; Ctrl+Shift+A cycles.\nDelegate: uncapped parallel workers; Ctrl+O expands live activity.`, 'info');
     }
   });
   pi.registerTool({
     name: 'delegate', label: 'PiAstra workers',
-    description: 'Delegate bounded tasks to isolated workers. general=GLM implementation/debugging; fast=DeepSeek docs/research/precise edits; review=Astra Medium independent Git review. Include all relevant requirements; workers do not see this conversation. All supplied tasks run concurrently with no worker-count cap, including writers. Assign nonconflicting file ownership and order dependencies yourself. Returns concise results and transcript paths. No nested delegation.',
+    description: 'Delegate bounded tasks to isolated workers. general=implementation/debugging; fast=docs/research/precise edits; review=independent Git review. Each role uses its current session model and reasoning selection. Include all relevant requirements; workers do not see this conversation. All supplied tasks run concurrently with no worker-count cap, including writers. Assign nonconflicting file ownership and order dependencies yourself. Returns concise results and transcript paths. No nested delegation.',
     parameters: Type.Object({ tasks: Type.Array(Type.Object({ role: Type.Union([Type.Literal('general'), Type.Literal('fast'), Type.Literal('review')]), access: Type.Union([Type.Literal('read'), Type.Literal('write')]), task: Type.String() }), { minItems: 1 }) }),
     renderCall(args, theme) {
       return new Text(theme.fg('toolTitle', `PiAstra · ${args.tasks?.length || 0} workers in parallel`), 0, 0);
@@ -117,7 +119,8 @@ export default function (pi: ExtensionAPI) {
     async execute(_id, params, signal, onUpdate, ctx) {
       if (agents.active !== 'orchestrator') throw new Error('Only the orchestrator can delegate.');
       validateTasks(params.tasks);
-      const workers = params.tasks.map(task => makeWorker(task, nextWorkerId++, config[task.role].model));
+      const selections = params.tasks.map(task => agents.selection(task.role));
+      const workers = params.tasks.map((task, index) => makeWorker(task, nextWorkerId++, selections[index].model));
       workers.forEach(worker => workerViews.set(worker.id, { worker }));
       const publish = () => onUpdate?.(result(progressText(workers), { workers: workers.map(w => ({ ...w, recent: [...w.recent] })) }));
       const ticker = setInterval(publish, 250);
@@ -130,7 +133,7 @@ export default function (pi: ExtensionAPI) {
         try { models = await runtime; } catch (error) { runtime = undefined; throw error; }
         const completed = await Promise.all(params.tasks.map(async (task, index) => {
           const worker = workers[index];
-          const selected = config[task.role];
+          const selected = selections[index];
           const slash = selected.model.indexOf('/');
           const model = models.getModel(selected.model.slice(0, slash), selected.model.slice(slash + 1));
           let session: any;
