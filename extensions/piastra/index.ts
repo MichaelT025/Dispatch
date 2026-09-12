@@ -6,14 +6,16 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { Type } from '@earendil-works/pi-ai';
 import { createAgentSession, DefaultResourceLoader, getAgentDir, ModelRuntime, SessionManager, SettingsManager, type ExtensionAPI } from '@earendil-works/pi-coding-agent';
-import { createQueue, gitArguments, validateTasks } from './policy.mjs';
+import { gitArguments, validateTasks } from './policy.mjs';
+import { makeWorker, trackEvent, progressText } from './progress.mjs';
+import { Text } from '@earendil-works/pi-tui';
+import { createWorkerView } from './worker-view.ts';
 import { agentOrder, createAgents } from './agents.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const config = JSON.parse(readFileSync(path.join(root, 'config/agents.json'), 'utf8'));
 const rolePrompt = (role: string) => readFileSync(path.join(root, 'roles', `${role}.md`), 'utf8');
 const exec = promisify(execFile);
-const enqueue = createQueue();
 const result = (text: string, details: any = {}) => ({ content: [{ type: 'text' as const, text }], details });
 
 function inspectTools(cwd: string) {
@@ -47,6 +49,29 @@ function inspectTools(cwd: string) {
 export default function (pi: ExtensionAPI) {
   let runtime: Promise<ModelRuntime> | undefined;
   const agents = createAgents(pi, config);
+  const workerViews = new Map<number, any>();
+  let nextWorkerId = 0;
+  let viewerOpen = false;
+  const openWorkers = async (ctx: any) => {
+    if (viewerOpen) return;
+    if (ctx.mode !== 'tui') { ctx.ui.notify('The worker viewer is available in the interactive CLI.', 'info'); return; }
+    viewerOpen = true;
+    try { await ctx.ui.custom((tui: any, theme: any, _keys: any, done: any) => createWorkerView(tui, theme, done, workerViews)); }
+    finally { viewerOpen = false; }
+  };
+  pi.registerCommand('workers', { description: 'View worker sessions and live tool output', handler: async (_args, ctx) => openWorkers(ctx) });
+  pi.registerShortcut('ctrl+shift+w', { description: 'Open live worker sessions', handler: openWorkers });
+  pi.on('session_start', async (_event, ctx) => {
+    workerViews.clear(); nextWorkerId = 0;
+    for (const entry of ctx.sessionManager.getBranch() as any[]) {
+      if (entry.type !== 'message' || entry.message?.role !== 'toolResult' || entry.message.toolName !== 'delegate') continue;
+      for (const saved of entry.message.details?.workers || []) {
+        const worker = { ...saved };
+        if (['running', 'starting'].includes(worker.status)) { worker.status = 'interrupted'; worker.activity = 'This worker is no longer attached.'; }
+        workerViews.set(worker.id, { worker }); nextWorkerId = Math.max(nextWorkerId, worker.id);
+      }
+    }
+  });
   const attempt = async (work: () => Promise<void>, ctx: any) => {
     try { await work(); } catch (error: any) { ctx.ui.notify(error.message, 'error'); }
   };
@@ -65,7 +90,7 @@ export default function (pi: ExtensionAPI) {
   pi.registerShortcut('ctrl+shift+a', { description: 'Cycle PiAstra agent', handler: async ctx => attempt(() => agents.cycle(ctx), ctx) });
   pi.on('before_agent_start', async event => {
     const instructions = agents.active === 'orchestrator'
-      ? 'Use delegate for bounded tasks. A batch accepts up to three read-only helpers; editing and review each use a single-task batch. Workers receive only the task you supply, plus project instructions, never the parent conversation. Include requirements, useful paths, and the exact milestone Git baseline for reviews. While a batch is running do not edit the same workspace yourself. Worker read access excludes shell, write and edit; it includes inspect_git and fetch_url. For test execution use a write-capable general worker. Full worker transcripts are saved outside the project. Do not read them unless the concise result is insufficient.'
+      ? 'Use delegate for bounded tasks. Choose as many concurrent workers as the task needs, including editing workers. Coordinate file ownership and dependencies to avoid conflicting edits; there is no worker-count cap or batch queue. Workers receive only the task you supply, plus project instructions, never the parent conversation. Include requirements, useful paths, and the exact milestone Git baseline for reviews. Keep a review target stable while it is inspected. Worker read access excludes shell, write and edit; it includes inspect_git and fetch_url. For test execution use a write-capable general worker. Full worker transcripts are saved outside the project. Do not read them unless the concise result is insufficient.'
       : 'You are the directly selected main agent, working with the user in this conversation. Treat the current user request as your task. Answer the user directly; do not wait for an orchestrator or delegate to other agents. Earlier conversation may come from other roles; follow your current role and tool permissions.';
     return { systemPrompt: `${event.systemPrompt}\n\nActive PiAstra agent: ${agents.active}\n${rolePrompt(agents.active)}\n${instructions}` };
   });
@@ -73,23 +98,37 @@ export default function (pi: ExtensionAPI) {
     description: 'Show PiAstra roles and delegation availability',
     handler: async (_args, ctx) => {
       const summary = Object.entries(config).map(([name, value]: [string, any]) => `${name}: ${value.model}${value.thinking ? ` (${value.thinking})` : ''}`).join('\n');
-      ctx.ui.notify(`Active: ${agents.active}\n${summary}\nCWD: ${ctx.cwd}\n/agent selects; Ctrl+Shift+A cycles.\nDelegate: up to 3 read-only helpers; serial edits/review.`, 'info');
+      ctx.ui.notify(`Active: ${agents.active}\n${summary}\nCWD: ${ctx.cwd}\n/agent selects; Ctrl+Shift+A cycles.\nDelegate: uncapped parallel workers; Ctrl+O expands live activity.`, 'info');
     }
   });
   pi.registerTool({
     name: 'delegate', label: 'PiAstra workers',
-    description: 'Delegate bounded tasks to isolated workers. general=GLM implementation/debugging; fast=DeepSeek docs/research/precise edits; review=Astra Medium independent Git review. Include all relevant requirements; workers do not see this conversation. Up to 3 read-only tasks together. Write or review requires one task. Returns concise results and transcript paths. No nested delegation.',
-    parameters: Type.Object({ tasks: Type.Array(Type.Object({ role: Type.Union([Type.Literal('general'), Type.Literal('fast'), Type.Literal('review')]), access: Type.Union([Type.Literal('read'), Type.Literal('write')]), task: Type.String() }), { minItems: 1, maxItems: 3 }) }),
+    description: 'Delegate bounded tasks to isolated workers. general=GLM implementation/debugging; fast=DeepSeek docs/research/precise edits; review=Astra Medium independent Git review. Include all relevant requirements; workers do not see this conversation. All supplied tasks run concurrently with no worker-count cap, including writers. Assign nonconflicting file ownership and order dependencies yourself. Returns concise results and transcript paths. No nested delegation.',
+    parameters: Type.Object({ tasks: Type.Array(Type.Object({ role: Type.Union([Type.Literal('general'), Type.Literal('fast'), Type.Literal('review')]), access: Type.Union([Type.Literal('read'), Type.Literal('write')]), task: Type.String() }), { minItems: 1 }) }),
+    renderCall(args, _theme) {
+      return new Text(`PiAstra · ${args.tasks?.length || 0} workers in parallel`, 0, 0);
+    },
+    renderResult(output, { expanded }) {
+      const details = output.details as any;
+      if (details?.workers) return new Text(progressText(details.workers, expanded) + (expanded ? '' : '\n\nCtrl+O: expand worker activity'), 0, 0);
+      return new Text(output.content.filter(c => c.type === 'text').map(c => c.text).join('\n'), 0, 0);
+    },
     async execute(_id, params, signal, onUpdate, ctx) {
       if (agents.active !== 'orchestrator') throw new Error('Only the orchestrator can delegate.');
       validateTasks(params.tasks);
-      return enqueue(async () => {
+      const workers = params.tasks.map(task => makeWorker(task, nextWorkerId++, config[task.role].model));
+      workers.forEach(worker => workerViews.set(worker.id, { worker }));
+      const publish = () => onUpdate?.(result(progressText(workers), { workers: workers.map(w => ({ ...w, recent: [...w.recent] })) }));
+      const ticker = setInterval(publish, 250);
+      publish();
+      try {
         signal?.throwIfAborted();
         const agentDir = getAgentDir();
         runtime ??= ModelRuntime.create({ authPath: path.join(agentDir, 'auth.json'), modelsPath: path.join(agentDir, 'models.json'), modelsStorePath: path.join(agentDir, 'models-store.json'), allowModelNetwork: true });
         let models: ModelRuntime;
         try { models = await runtime; } catch (error) { runtime = undefined; throw error; }
-        const completed = await Promise.all(params.tasks.map(async task => {
+        const completed = await Promise.all(params.tasks.map(async (task, index) => {
+          const worker = workers[index];
           const selected = config[task.role];
           const slash = selected.model.indexOf('/');
           const model = models.getModel(selected.model.slice(0, slash), selected.model.slice(slash + 1));
@@ -108,24 +147,35 @@ export default function (pi: ExtensionAPI) {
             const manager = SessionManager.create(ctx.cwd, dir);
             ({ session } = await createAgentSession({ cwd: ctx.cwd, agentDir, modelRuntime: models, model, thinkingLevel: selected.thinking || 'off', settingsManager, resourceLoader: loader, sessionManager: manager, tools: task.access === 'write' ? ['read', 'bash', 'edit', 'write', 'grep', 'find', 'ls', 'inspect_git', 'fetch_url'] : ['read', 'grep', 'find', 'ls', 'inspect_git', 'fetch_url'], customTools: inspectTools(ctx.cwd) }));
             transcript = manager.getSessionFile();
+            worker.transcript = transcript;
+            workerViews.get(worker.id).getMessages = () => session.state.messages;
+            worker.status = 'running';
+            worker.activity = 'Thinking…';
+            session.subscribe((event: any) => { trackEvent(worker, event); });
             abort = () => { void session.abort(); };
             cancel.addEventListener('abort', abort, { once: true }); cancel.throwIfAborted();
-            onUpdate?.(result(`${task.role} · ${selected.model} · running`));
             await session.prompt(task.task);
             cancel.throwIfAborted();
             const last = [...session.state.messages].reverse().find((m: any) => m.role === 'assistant');
             if (!last || ['error', 'aborted'].includes(last.stopReason)) throw new Error(last?.errorMessage || 'Worker returned no successful final response.');
             const text = last.content.filter((c: any) => c.type === 'text').map((c: any) => c.text).join('\n');
+            worker.status = 'completed';
+            worker.activity = 'Finished';
             return { role: task.role, model: selected.model, ok: true, text: text.slice(0, 12000) + (text.length > 12000 ? '\n[Truncated; see transcript.]' : ''), transcript };
           } catch (error: any) {
+            worker.status = cancel.aborted ? 'cancelled' : 'failed';
+            worker.activity = error.message;
             return { role: task.role, model: selected.model, ok: false, text: error.message, transcript };
           } finally {
+            worker.ended = Date.now();
+            publish();
             if (abort) cancel.removeEventListener('abort', abort);
             session?.dispose();
+            delete workerViews.get(worker.id)?.getMessages;
           }
         }));
-        return result(completed.map(r => `${r.role} · ${r.model} · ${r.ok ? 'completed' : 'FAILED'}\n${r.text}\nTranscript: ${r.transcript || '(none)'}`).join('\n\n'), { results: completed });
-      });
+        return result(completed.map(r => `${r.role} · ${r.model} · ${r.ok ? 'completed' : 'FAILED'}\n${r.text}\nTranscript: ${r.transcript || '(none)'}`).join('\n\n'), { results: completed, workers });
+      } finally { clearInterval(ticker); }
     }
   });
 }
