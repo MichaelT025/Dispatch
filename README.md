@@ -7,6 +7,7 @@ A lightweight Pi setup with Astra planning, OpenCode Go workers, and Astra miles
 With Pi installed and signed in to Codex and OpenCode Go, run `npm run install:cli` once from this checkout. Then open a terminal in any project and run **`pi`**. `/piastra` shows the role configuration. Restart existing Pi sessions after installation.
 
 Use **`/agent`** to open the agent picker, or select directly with `/agent orchestrator`, `/agent general`, `/agent fast`, or `/agent review`. **Ctrl+Shift+A** cycles in that order. The footer shows the active agent. Each selection changes model, reasoning, prompt and available tools, retaining the conversation; the selected model sees the existing history. The chosen role is restored when you resume that session. Switch after the current turn finishes or stop it first.
+Upstream/in-framework subagent tools are hard-blocked in PiAstra sessions so `delegate` stays the single delegation system.
 
 The installer also adds lightweight syntax highlighting for edit results. For the optional Atelier sidebar with PiAstra workers and TODOs, installation commands, controls, and performance notes, see [Pi CLI appearance and sidebar](docs/pi-ui.md).
 
@@ -46,6 +47,10 @@ The alternative pins `@agegr/pi-web` 0.9.1, which uses Pi 0.85.1 and Next.js. It
 
 A scoped Next.js 16.3.3 override addresses GHSA-p293-qw3h-jr36 and GHSA-2xp9-vwfh-vxw4 in the UI's pinned 16.3.1 dependency. Keep this override until upstream selects a fixed release.
 
+## Fork UI
+
+`npm run start:fork` runs the PiAstra fork of pi-web-ui from a **separate sibling checkout** (`../PiAstra-web-ui`, overridable with `PIASTRA_FORK_DIR`) on http://127.0.0.1:8790, using built artifacts only, with isolated agent/UI state and the delegation extension active. The sibling is a local fork branch (`piastra-redesign`, UI commit `fe859057f991861780c87b051113f2a6766b7e1e`) that is **not published to GitHub**; the launcher requires its `dist/server/index.js` and `web/dist/index.html` to be built first. See [FORK_PLAN.md](docs/FORK_PLAN.md) for the approved plan, exact fork baseline, settings layout and current evidence. The launcher copies credential bytes from the existing local path once and never prints or commits them.
+
 ## Architecture
 
 PiAstra is its own repository, not a fork of Pi or pi-web-ui. Both upstream packages are pinned npm dependencies. This repository owns role prompts, configuration, launch scripts, and any small Pi extension needed to connect them. Upgrade dependencies deliberately through the lockfile; do not edit node_modules.
@@ -82,8 +87,8 @@ Setup seeds missing settings and preserves existing files. `--import-auth` copie
 
 If no credentials are available, sign in with the installed Pi CLI using `.local/agent` as `PI_CODING_AGENT_DIR`. Subscription availability must be verified before model calls. Normal conversations in the setup preview use Astra Low and consume allowance; the setup smoke check itself sends no model requests.
 
-## Next implementation step
+## Fork UI status
 
-Connect the web UI to the same delegation extension. The CLI workflow is available independently of the UI trials.
+The fork UI frontend is implemented in the sibling checkout at commit `fe85905`; the reference images pair the original upstream Codex captures (`codex.png`, `codex_empty_sidebar.png`) with generated PiAstra captures (`astra-01-chat-empty.png`, `astra-02-chooser.png`, `astra-03-files-inline.png`, `astra-04-terminal.png`, `astra-05-empty.png`). The parent-side launcher and integration policy are in place (`npm run test:fork` 15/15, `npm run test:cli` 10/10). The sibling's final typecheck, `build:web` and browser shell runs all pass; an earlier run had a startup empty-state timing flake that did not reproduce in the final passes. No provider/model requests were made, so subscription access in fork sessions is unverified. The CLI workflow and the tau/agegr trials remain available independently.
 
-See [the design brief](IMPLEMENTATION_BRIEF.md) for the agreed direction and open choices.
+See [the design brief](docs/IMPLEMENTATION_BRIEF.md) for the agreed direction and open choices.
