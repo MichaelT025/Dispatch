@@ -2,6 +2,22 @@
 
 A lightweight Pi setup with Astra planning, OpenCode Go workers, and Astra milestone review.
 
+## Preferred UI trial: Tau
+
+Run `npm run start:tau` in a terminal and open http://127.0.0.1:3001. [Tau](https://github.com/deflating/tau) runs as an extension inside Pi and mirrors the active session. Keep that terminal running. It is the preferred trial for a minimal chat interface; historical sessions are read-only in its browser view, unlike agegr's fuller session manager.
+
+The launcher uses ignored `.local/tau-agent` storage, binds explicitly to loopback, and loads only Tau as an extension. It starts offline to avoid startup downloads. Astra is currently accepted as a custom model ID by the bundled catalog; the UI connection is verified, but subscription model access and orchestration are not. No model requests were used for UI verification.
+
+Tau writes its instance registry under the user's `.pi/tau-instances`. Its upstream settings panel also accesses the global Pi settings file, so the trial's isolated agent directory does not isolate every Tau-specific preference. Appearance customization can use `TAU_STATIC_DIR` without changing Pi itself.
+
+## Alternative UI trial: agegr/pi-web
+
+Run `npm run start:agegr` and open http://127.0.0.1:30141 to compare [agegr/pi-web](https://github.com/agegr/pi-web). Select the PiAstra project directory in its sidebar. The original UI remains available through `npm start`; the default has not been switched while evaluating the replacement.
+
+The alternative pins `@agegr/pi-web` 0.9.1, which uses Pi 0.85.1 and Next.js. It has its own ignored `.local/agegr-agent` directory, seeded once from the existing local settings and credentials. It does not import the other UI's templates or implement our delegation workflow. No fork is needed to run the trial. The initial page opened, but project selection was not verified; Tau was selected before completing that evaluation.
+
+A scoped Next.js 16.3.3 override addresses GHSA-p293-qw3h-jr36 and GHSA-2xp9-vwfh-vxw4 in the UI's pinned 16.3.1 dependency. Keep this override until upstream selects a fixed release.
+
 ## Architecture
 
 PiAstra is its own repository, not a fork of Pi or pi-web-ui. Both upstream packages are pinned npm dependencies. This repository owns role prompts, configuration, launch scripts, and any small Pi extension needed to connect them. Upgrade dependencies deliberately through the lockfile; do not edit node_modules.

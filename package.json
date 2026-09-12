@@ -4,17 +4,28 @@
   "private": true,
   "type": "module",
   "description": "Lightweight Pi orchestration with Astra planning and milestone review",
-  "engines": { "node": ">=22.19.0" },
+  "engines": {
+    "node": ">=22.19.0"
+  },
   "scripts": {
     "setup": "node scripts/setup.mjs",
     "start": "node scripts/start.mjs",
-    "doctor": "node scripts/doctor.mjs"
+    "doctor": "node scripts/doctor.mjs",
+    "start:agegr": "node scripts/start-agegr.mjs",
+    "start:tau": "node scripts/start-tau.mjs"
   },
   "dependencies": {
+    "@agegr/pi-web": "0.9.1",
     "@earendil-works/pi-coding-agent": "0.84.4",
-    "pi-web-ui": "0.80.0"
+    "pi-web-ui": "0.80.0",
+    "tau-mirror": "1.0.9"
   },
   "overrides": {
-    "express": { "qs": "6.16.0" }
+    "@agegr/pi-web": {
+      "next": "16.3.3"
+    },
+    "express": {
+      "qs": "6.16.0"
+    }
   }
 }
