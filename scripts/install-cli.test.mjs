@@ -37,6 +37,10 @@ test('installer preserves packages and disables only upstream worktree extension
     ]);
     assert.match(installed.extensions.join('\n'), /extensions[\\/]pi-worktree[\\/]git-worktree\.ts/);
     await readFile(path.join(agentDir, 'piastra/package/extensions/pi-worktree/LICENSE'), 'utf8');
+    // The worker guard helper is part of the managed copy; index.ts imports it
+    // at runtime, so a missing file would break the installed extension.
+    const guard = await readFile(path.join(agentDir, 'piastra/package/extensions/piastra/guard.mjs'), 'utf8');
+    assert.match(guard, /PIASTRA_WORKER_GUARD_CHANNEL/);
   } finally {
     await rm(agentDir, { recursive: true, force: true });
   }

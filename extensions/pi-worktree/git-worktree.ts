@@ -6,22 +6,41 @@
  *   /worktree ls                   list worktrees
  *   /worktree <branch>             create worktree for branch
  *   /worktree add <branch>         same as above
- *   /worktree open <branch>        show path (+ copy to clipboard on macOS)
+ *   /worktree open <branch>        start a fresh session in the worktree
  *   /worktree rm <branch>          remove worktree (confirms first)
  *   /worktree pr <number>          fetch PR branch via gh, create worktree
  *
+ * In the interactive CLI, `add` (new or existing), `open`, a worktree picked
+ * from `ls`, and `pr` start a brand-new empty session in the target worktree
+ * and switch the running CLI to it. The current conversation is never copied
+ * or modified; the new session gets its own file in the standard per-cwd
+ * session directory, so `/resume` finds it like any other session.
+ * `ctx.switchSession` rebuilds tools, extensions, resources, trust and
+ * PiAstra's worker cwd for the worktree. Other hosts keep the path-copy
+ * behaviour.
+ *
  * Layout:
  *   ~/AGI/mobile/                  ← main checkout
- *   ~/AGI/mobile-fix-login/        ← worktree for fix/login
+ *   ~/.pi/worktrees/mobile/fix-login/  ← managed worktree for fix/login
  *
  * Safety:
  * - must be inside a git repo
  * - never force-push / hard-reset / clean -fdx
  * - rm always confirms
  * - rm --force only after a second confirm if worktree is dirty
+ * - session switching refuses while the agent, a compaction/branch summary,
+ *   queued messages, or PiAstra workers are busy
+ * - a created worktree is kept (with its path reported) if its session switch
+ *   is refused, cancelled, or fails
  */
 
-import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
+import {
+	SessionManager,
+	type ExtensionAPI,
+	type ExtensionCommandContext,
+} from "@earendil-works/pi-coding-agent";
+import { existsSync } from "node:fs";
+import { readFile, rm, writeFile } from "node:fs/promises";
 import { basename, join } from "node:path";
 import { homedir } from "node:os";
 
@@ -53,12 +72,14 @@ async function ensureRepo(
 	pi: ExtensionAPI,
 	ctx: ExtensionCommandContext,
 ): Promise<string | null> {
-	const inside = await run(pi, ["rev-parse", "--is-inside-work-tree"]);
+	// ctx.cwd, not process.cwd: after a worktree session switch the process
+	// directory is unchanged but the agent and its commands work in the new cwd.
+	const inside = await run(pi, ["rev-parse", "--is-inside-work-tree"], ctx.cwd);
 	if (inside.code !== 0 || inside.stdout !== "true") {
 		ctx.ui.notify("Not inside a git repository", "error");
 		return null;
 	}
-	const top = await run(pi, ["rev-parse", "--show-toplevel"]);
+	const top = await run(pi, ["rev-parse", "--show-toplevel"], ctx.cwd);
 	if (top.code !== 0 || !top.stdout) {
 		ctx.ui.notify("Could not resolve repo root", "error");
 		return null;
@@ -203,6 +224,281 @@ export function resolveWorktreePath(
 	return join(home, ".pi", "worktrees", basename(mainPath), branchSlug(branch));
 }
 
+/** Shared event channel: PiAstra answers synchronously whether workers are running. */
+export const WORKER_GUARD_CHANNEL = "piastra:worker-guard";
+
+export type PiastraActivity = {
+	activeWorkers: number;
+	compacting: boolean;
+	summarizing: boolean;
+};
+
+/**
+ * Ask a loaded PiAstra extension for its switch-blocking state: delegated
+ * workers plus the compaction and branch-summary phases that `ctx.isIdle()`
+ * does not expose. The event bus is synchronous; absent PiAstra simply means
+ * nothing is busy. Older PiAstra copies answer only `active`, so the extra
+ * flags default to false.
+ */
+export function piastraActivity(pi: ExtensionAPI): PiastraActivity {
+	const query = {
+		type: "query",
+		busy: false,
+		active: 0,
+		compacting: false,
+		summarizing: false,
+	};
+	pi.events.emit(WORKER_GUARD_CHANNEL, query);
+	return {
+		activeWorkers:
+			Number.isInteger(query.active) && query.active > 0 ? query.active : 0,
+		compacting: query.compacting === true,
+		summarizing: query.summarizing === true,
+	};
+}
+
+export function activePiastraWorkers(pi: ExtensionAPI): number {
+	return piastraActivity(pi).activeWorkers;
+}
+
+export function worktreeSwitchRefusal(state: {
+	idle: boolean;
+	pending: boolean;
+	activeWorkers: number;
+	compacting?: boolean;
+	summarizing?: boolean;
+}): string | undefined {
+	if (!state.idle) {
+		return "Wait for the current turn to finish, or stop it before switching to a worktree session.";
+	}
+	if (state.compacting) {
+		return "Context compaction is still running. Wait for it to finish before switching to a worktree session.";
+	}
+	if (state.summarizing) {
+		return "A branch summary is still running. Wait for it to finish before switching to a worktree session.";
+	}
+	if (state.pending) {
+		return "Queued messages are waiting. Wait for them to be sent or clear the queue before switching to a worktree session.";
+	}
+	if (state.activeWorkers > 0) {
+		return `${state.activeWorkers} PiAstra worker${state.activeWorkers === 1 ? " is" : "s are"} still running. Wait for completion or cancel the delegate call before switching to a worktree session.`;
+	}
+	return undefined;
+}
+
+/** Collect every switch-blocking condition this host can observe. */
+function switchRefusal(
+	pi: ExtensionAPI,
+	ctx: ExtensionCommandContext,
+): string | undefined {
+	const activity = piastraActivity(pi);
+	return worktreeSwitchRefusal({
+		idle: ctx.isIdle(),
+		pending: ctx.hasPendingMessages(),
+		activeWorkers: activity.activeWorkers,
+		compacting: activity.compacting,
+		summarizing: activity.summarizing,
+	});
+}
+
+export type WorktreeSwitchOutcome =
+	| "switched"
+	| "unsupported"
+	| "refused"
+	| "cancelled"
+	| "failed";
+
+/**
+ * Persist the empty header generated by `SessionManager.create` as the first
+ * line of its reserved file. The exclusive `wx` flag guarantees an existing
+ * session file is never overwritten if a path ever collides. No conversation
+ * entries and no `parentSession` are copied, so the result is a fresh session
+ * in the target cwd that `/resume` discovers through the standard per-cwd
+ * session directory.
+ */
+export async function persistFreshSessionHeader(
+	manager: SessionManager,
+): Promise<{ file: string; line: string }> {
+	const header = manager.getHeader();
+	const file = manager.getSessionFile();
+	if (!header || !file) {
+		throw new Error("SessionManager did not generate a session header");
+	}
+	if (header.parentSession !== undefined) {
+		throw new Error("A fresh worktree session must not have a parent session");
+	}
+	const line = `${JSON.stringify(header)}\n`;
+	await writeFile(file, line, { flag: "wx" });
+	return { file, line };
+}
+
+/**
+ * Remove a session file this switch created, but only while it still contains
+ * exactly the header that was written. If anything else landed in it, it may
+ * already be in use, so leave it in place.
+ */
+async function removeOwnUnusedSession(created: {
+	file: string;
+	line: string;
+}): Promise<void> {
+	try {
+		if ((await readFile(created.file, "utf8")) !== created.line) return;
+		await rm(created.file, { force: true });
+	} catch { /* already gone or unreadable; leave it alone */ }
+}
+
+/**
+ * Start a brand-new empty session in the target worktree and switch to it.
+ *
+ * `SessionManager.create` reserves a unique file in the standard per-cwd
+ * session directory and `persistFreshSessionHeader` writes its generated
+ * header with the exclusive `wx` flag. `ctx.switchSession` then tears the old
+ * runtime down and rebuilds extensions, tools, resources, trust and the agent
+ * cwd for the worktree. The old `pi`/`ctx` are invalid once the switch starts,
+ * so the success notice is emitted only from the replacement-session callback
+ * and the caller returns immediately afterwards.
+ */
+export async function switchToWorktree(
+	pi: ExtensionAPI,
+	ctx: ExtensionCommandContext,
+	targetPath: string,
+	title: string,
+): Promise<WorktreeSwitchOutcome> {
+	if (ctx.mode !== "tui") {
+		ctx.ui.notify(
+			"Session switching is available only in the interactive CLI.",
+			"info",
+		);
+		return "unsupported";
+	}
+
+	const refusal = switchRefusal(pi, ctx);
+	if (refusal) {
+		ctx.ui.notify(`${refusal}\n\nThe session was not changed.`, "warning");
+		return "refused";
+	}
+
+	// Captured while the old context is valid. The file itself is never
+	// modified; it only tells the user where the earlier conversation stays.
+	const sourceFile = ctx.sessionManager.getSessionFile();
+	const sourceSaved = !!sourceFile && existsSync(sourceFile);
+
+	let created: { file: string; line: string };
+	try {
+		created = await persistFreshSessionHeader(
+			SessionManager.create(targetPath),
+		);
+	} catch (error: any) {
+		ctx.ui.notify(
+			`Could not prepare a fresh session in the worktree:\n${error?.message || error}`,
+			"error",
+		);
+		return "refused";
+	}
+
+	// Show the recovery paths while the old context still exists: if rebuilding
+	// the runtime fails (the host may exit before this command resumes),
+	// `pi --session <sourceFile>` reopens the original conversation.
+	ctx.ui.notify(
+		`Starting a fresh session in ${title}\n${targetPath}\n\nNew session file:\n${created.file}\n\n` +
+			(sourceSaved
+				? `The current conversation stays saved at:\n${sourceFile}\nIf the worktree session fails to start, restart Pi with:\npi --session "${sourceFile}"`
+				: "The current conversation is not saved to a file, so it will not be recoverable after this switch."),
+		"info",
+	);
+
+	try {
+		const result = await ctx.switchSession(created.file, {
+			withSession: async (replacement) => {
+				replacement.ui.notify(
+					`Started a fresh session in ${title}\n${targetPath}\n\n` +
+						"Tools, extensions, Git and PiAstra workers now use this worktree." +
+						(sourceSaved
+							? `\nThe earlier conversation stays saved at:\n${sourceFile}`
+							: "\nThe earlier conversation was ephemeral and is not saved."),
+					"info",
+				);
+			},
+		});
+		if (result.cancelled) {
+			await removeOwnUnusedSession(created);
+			ctx.ui.notify(
+				"Session switch was cancelled; the current conversation is unchanged and the new session file was removed.",
+				"warning",
+			);
+			return "cancelled";
+		}
+		return "switched";
+	} catch (error: any) {
+		// The host tears the old runtime down before it builds the replacement,
+		// so the old context may already be invalid. Keep this best-effort and
+		// keep the recovery information truthful: the original session was never
+		// modified and the new file is still on disk.
+		try {
+			ctx.ui.notify(
+				`Fresh worktree session did not start:\n${error?.message || error}\n\n` +
+					(sourceSaved
+						? `The original session stays saved at:\n${sourceFile}\n`
+						: "The original conversation is not saved.\n") +
+					`New session file:\n${created.file}`,
+				"error",
+			);
+		} catch { /* the old context may be gone after teardown */ }
+		return "failed";
+	}
+}
+
+/**
+ * Activate a worktree after `/worktree add`, `open`, `ls` selection or `pr`.
+ * Interactive hosts always switch to a fresh session there; every other host
+ * never switches and keeps the path-copy behaviour.
+ */
+async function activateWorktree(
+	pi: ExtensionAPI,
+	ctx: ExtensionCommandContext,
+	worktreePath: string,
+	title: string,
+	created: boolean,
+): Promise<WorktreeSwitchOutcome | undefined> {
+	if (ctx.mode === "tui") {
+		return await switchToWorktree(
+			pi,
+			ctx,
+			worktreePath,
+			created ? `new worktree ${title}` : title,
+		);
+	}
+
+	const copied = await copyToClipboard(pi, worktreePath);
+	ctx.ui.notify(
+		`${created ? "Created" : "Worktree"}: ${title}\n→ ${worktreePath}${copied ? "\n(path copied)" : ""}\n\nNext: cd ${worktreePath} && pi`,
+		"info",
+	);
+	return undefined;
+}
+
+/**
+ * A created worktree is never removed because its session switch did not
+ * complete. Report the path and the manual recovery options so the user is not
+ * left with an undiscovered worktree.
+ */
+function reportCreatedWorktreeNotSwitched(
+	ctx: ExtensionCommandContext,
+	title: string,
+	worktreePath: string,
+	outcome: WorktreeSwitchOutcome,
+): void {
+	try {
+		ctx.ui.notify(
+			`Worktree created, but the session was not switched to it.\n${title}\n→ ${worktreePath}\n\n` +
+				`The worktree is kept. To use it now:\n` +
+				`cd "${worktreePath}" && pi\n` +
+				`or run /worktree open ${title} once the current turn, queue, and workers are clear.`,
+			outcome === "refused" ? "warning" : "error",
+		);
+	} catch { /* the old context may already be gone after a failed teardown */ }
+}
+
 function findWorktree(
 	worktrees: Worktree[],
 	query: string,
@@ -257,10 +553,12 @@ async function createWorktree(
 
 	const existing = findWorktree(worktrees, branch);
 	if (existing) {
-		const copied = await copyToClipboard(pi, existing.path);
-		ctx.ui.notify(
-			`Already exists\n${existing.branch ?? "detached"}  →  ${existing.path}${copied ? "\n(path copied)" : ""}\n\nNext: cd ${existing.path} && pi`,
-			"info",
+		await activateWorktree(
+			pi,
+			ctx,
+			existing.path,
+			existing.branch ?? "detached",
+			false,
 		);
 		return;
 	}
@@ -273,6 +571,16 @@ async function createWorktree(
 			"error",
 		);
 		return;
+	}
+
+	// Refuse before touching Git when a session switch would be unsafe. The
+	// same conditions are enforced again by session_before_switch in PiAstra.
+	if (ctx.mode === "tui") {
+		const refusal = switchRefusal(pi, ctx);
+		if (refusal) {
+			ctx.ui.notify(`${refusal}\n\nThe worktree was not created.`, "warning");
+			return;
+		}
 	}
 
 	const localRef = `refs/heads/${branch}`;
@@ -334,11 +642,11 @@ async function createWorktree(
 		return;
 	}
 
-	const copied = await copyToClipboard(pi, path);
-	ctx.ui.notify(
-		`Created ${branch}\n→ ${path}${copied ? "\n(path copied)" : ""}\n\nNext: cd ${path} && pi`,
-		"info",
-	);
+	await activateWorktree(pi, ctx, path, branch, true).then((outcome) => {
+		if (outcome && outcome !== "switched") {
+			reportCreatedWorktreeNotSwitched(ctx, branch, path, outcome);
+		}
+	});
 }
 
 async function openWorktree(
@@ -356,11 +664,7 @@ async function openWorktree(
 		);
 		return;
 	}
-	const copied = await copyToClipboard(pi, wt.path);
-	ctx.ui.notify(
-		`${wt.branch ?? "detached"}  →  ${wt.path}${copied ? "\n(path copied)" : ""}\n\nNext: cd ${wt.path} && pi`,
-		"info",
-	);
+	await activateWorktree(pi, ctx, wt.path, wt.branch ?? "detached", false);
 }
 
 async function removeWorktree(
@@ -448,16 +752,15 @@ async function listAndMaybeOpen(
 		return;
 	}
 
-	const choice = await ctx.ui.select("Worktrees (select to copy path)", lines);
+	const choice = await ctx.ui.select(
+		"Worktrees (select to start a fresh session in one)",
+		lines,
+	);
 	if (!choice) return;
 	const picked = worktrees.find((w) => formatWt(w, mainPath) === choice);
 	if (!picked) return;
 
-	const copied = await copyToClipboard(pi, picked.path);
-	ctx.ui.notify(
-		`${picked.branch ?? "detached"}  →  ${picked.path}${copied ? "\n(path copied)" : ""}\n\nNext: cd ${picked.path} && pi`,
-		"info",
-	);
+	await activateWorktree(pi, ctx, picked.path, picked.branch ?? "detached", false);
 }
 
 async function createFromPr(
@@ -469,6 +772,16 @@ async function createFromPr(
 	if (!/^\d+$/.test(prNumber)) {
 		ctx.ui.notify(`Usage: /worktree pr <number>\nGot: ${prNumber}`, "error");
 		return;
+	}
+
+	// The PR flow below fetches into local refs. Guard before the first
+	// mutating fetch so a refused switch leaves the repository untouched.
+	if (ctx.mode === "tui") {
+		const refusal = switchRefusal(pi, ctx);
+		if (refusal) {
+			ctx.ui.notify(`${refusal}\n\nThe worktree was not created.`, "warning");
+			return;
+		}
 	}
 
 	// gh pr checkout can move current branch; instead resolve head ref then add worktree.
@@ -544,6 +857,13 @@ async function createFromPr(
 				await openWorktree(pi, ctx, cwd, branch);
 				return;
 			}
+			if (ctx.mode === "tui") {
+				const refusal = switchRefusal(pi, ctx);
+				if (refusal) {
+					ctx.ui.notify(`${refusal}\n\nThe worktree was not created.`, "warning");
+					return;
+				}
+			}
 			const path = resolveWorktreePath(mainPath, branch);
 			const add = await run(
 				pi,
@@ -557,11 +877,13 @@ async function createFromPr(
 				);
 				return;
 			}
-			const copied = await copyToClipboard(pi, path);
-			ctx.ui.notify(
-				`PR #${prNumber} ${data.title ?? ""}\nCreated ${branch}\n→ ${path}${copied ? "\n(path copied)" : ""}\n\nNext: cd ${path} && pi`,
-				"info",
-			);
+			if (data.title) {
+				ctx.ui.notify(`PR #${prNumber}: ${data.title}`, "info");
+			}
+			const outcome = await activateWorktree(pi, ctx, path, branch, true);
+			if (outcome && outcome !== "switched") {
+				reportCreatedWorktreeNotSwitched(ctx, branch, path, outcome);
+			}
 			return;
 		}
 	}
@@ -610,11 +932,11 @@ export default function (pi: ExtensionAPI) {
 				case "help": {
 					ctx.ui.notify(
 						[
-							"/worktree                 list + pick",
+							"/worktree                 list + pick (fresh session there)",
 							"/worktree ls              list",
-							"/worktree <branch>        create",
-							"/worktree add <branch>    create",
-							"/worktree open <branch>   show/copy path",
+							"/worktree <branch>        create + fresh session there",
+							"/worktree add <branch>    create + fresh session there",
+							"/worktree open <branch>   fresh session there",
 							"/worktree rm <branch>     remove (keeps branch)",
 							"/worktree pr <number>     worktree from PR",
 						].join("\n"),
