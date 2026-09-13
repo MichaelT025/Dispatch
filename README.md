@@ -19,7 +19,7 @@ The installer backs up your Pi settings, preserves unrelated fields, sets the de
 
 ### CLI worktrees
 
-For worktree commands in both global Pi and the installed PiAstra CLI, install the plugin separately through Pi's user package manager: `pi install npm:@thisux/pi-worktree@1.2.0`. The PiAstra installer preserves this package setting but does not install the plugin itself. Restart Pi (or run `/reload`) to enable `/worktree ls`, `/worktree add`, `/worktree open`, `/worktree rm`, and `/worktree pr`. The package is CLI-only here: PiAstra WebUI settings, launchers, and seeding remain unchanged and do not load it.
+For worktree commands in global Pi and the installed PiAstra CLI, run `npm run install:cli`; the managed installer provides its standalone plugin copy, so installing the upstream package separately is not required. If `npm:@thisux/pi-worktree@1.2.0` is already installed, the installer preserves its package but disables its pinned extension in favor of the managed, license-retaining copy, so updates remain durable. New worktrees use `~/.pi/worktrees/<repo>/<branch-slug>` (for example `C:/Users/micha/.pi/worktrees/PiAstra/feat-piastra-cli`); existing worktrees remain discoverable and openable through Git's worktree list. Fully restart Pi after installation (observed `/reload` is insufficient) to enable `/worktree ls`, `/worktree add`, `/worktree open`, `/worktree rm`, and `/worktree pr`. The package is CLI-only here: PiAstra WebUI settings, launchers, and seeding remain unchanged and do not load it.
 
 Try: “Implement this change using general workers, use fast helpers for investigation, then have the review worker independently inspect the diff against the starting commit.”
 
