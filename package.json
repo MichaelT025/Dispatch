@@ -15,7 +15,7 @@
     "start:agegr": "node scripts/start-agegr.mjs",
     "start:tau": "node scripts/start-tau.mjs",
     "install:cli": "node scripts/install-cli.mjs",
-    "test:cli": "node --experimental-strip-types --test extensions/piastra/*.test.mjs",
+    "test:cli": "node --experimental-strip-types --test extensions/piastra/*.test.mjs extensions/pi-worktree/*.test.mjs scripts/install-cli.test.mjs",
     "test:fork": "node --experimental-strip-types --test extensions/piastra/*.test.mjs scripts/start-fork.test.mjs"
   },
   "dependencies": {

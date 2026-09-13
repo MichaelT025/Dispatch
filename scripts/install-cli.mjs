@@ -12,15 +12,25 @@ try {
   await copyFile(target, `${target}.piastra-backup-${Date.now()}`);
 } catch (error) { if (error.code !== 'ENOENT') throw error; }
 const installed = path.join(agentDir, 'piastra', 'package');
-for (const dir of ['extensions/piastra', 'extensions/pi-ui', 'config', 'roles']) await mkdir(path.join(installed, dir), { recursive: true });
-for (const file of ['extensions/piastra/index.ts', 'extensions/piastra/policy.mjs', 'extensions/piastra/agents.mjs', 'extensions/piastra/progress.mjs', 'extensions/piastra/sidebar.mjs', 'extensions/piastra/worker-view.ts', 'extensions/piastra/worker-render.ts', 'config/agents.json', ...['orchestrator', 'general', 'fast', 'review'].map(role => `roles/${role}.md`)]) {
+for (const dir of ['extensions/piastra', 'extensions/pi-ui', 'extensions/pi-worktree', 'config', 'roles']) await mkdir(path.join(installed, dir), { recursive: true });
+for (const file of ['extensions/piastra/index.ts', 'extensions/piastra/policy.mjs', 'extensions/piastra/agents.mjs', 'extensions/piastra/progress.mjs', 'extensions/piastra/sidebar.mjs', 'extensions/piastra/worker-view.ts', 'extensions/piastra/worker-render.ts', 'extensions/pi-worktree/git-worktree.ts', 'extensions/pi-worktree/LICENSE', 'config/agents.json', ...['orchestrator', 'general', 'fast', 'review'].map(role => `roles/${role}.md`)]) {
   await copyFile(path.join(root, file), path.join(installed, file));
 }
 await writeFile(path.join(installed, 'package.json'), JSON.stringify({ name: 'piastra-user-extension', private: true, type: 'module' }) + '\n');
 await copyFile(path.join(root, 'extensions/pi-ui/index.ts'), path.join(installed, 'extensions/pi-ui/index.ts'));
 const extension = path.join(installed, 'extensions', 'piastra', 'index.ts');
+const worktreeExtension = path.join(installed, 'extensions', 'pi-worktree', 'git-worktree.ts');
 const developmentPath = path.join(root, 'extensions', 'piastra', 'index.ts');
-settings.extensions = [...new Set([...(settings.extensions || []).filter(p => p !== developmentPath), extension, path.join(installed, 'extensions/pi-ui/index.ts')])];
+settings.extensions = [...new Set([...(settings.extensions || []).filter(p => p !== developmentPath), extension, path.join(installed, 'extensions/pi-ui/index.ts'), worktreeExtension])];
+// The upstream package remains installed for updates and its commands/docs, but
+// its extension is disabled so the managed copy is the sole /worktree provider.
+settings.packages = (settings.packages || []).map((entry) => {
+  const source = typeof entry === 'string' ? entry : entry?.source;
+  if (source === 'npm:@thisux/pi-worktree@1.2.0') {
+    return { ...(typeof entry === 'string' ? { source: entry } : entry), extensions: [] };
+  }
+  return entry;
+});
 const config = JSON.parse(await readFile(path.join(root, 'config/agents.json'), 'utf8')).orchestrator;
 const slash = config.model.indexOf('/');
 settings.defaultProvider = config.model.slice(0, slash);
