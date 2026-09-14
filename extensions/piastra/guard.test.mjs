@@ -235,7 +235,7 @@ test('a rejected worker runtime initialization finalizes records and releases th
           { role: 'general', access: 'write', task: 'Edit a file' },
           { role: 'fast', access: 'read', task: 'Inspect a file' },
         ],
-      }, undefined, undefined, { cwd: root, ui: { notify: () => {} } }),
+      }, undefined, undefined, { cwd: root, sessionManager: { getSessionId: () => 'guard-init' }, isProjectTrusted: () => true, ui: { notify: () => {} } }),
       /synthetic runtime initialization failure/,
     );
   } finally {
@@ -269,7 +269,7 @@ test('a cancelled worker batch finalizes starting records so the guard releases'
   await assert.rejects(
     delegate.execute('call-cancel', {
       tasks: [{ role: 'fast', access: 'read', task: 'Inspect a file' }],
-    }, controller.signal, undefined, { cwd: root, ui: { notify: () => {} } }),
+    }, controller.signal, undefined, { cwd: root, sessionManager: { getSessionId: () => 'guard-cancel' }, isProjectTrusted: () => true, ui: { notify: () => {} } }),
     (error) => error?.name === 'AbortError',
   );
 
