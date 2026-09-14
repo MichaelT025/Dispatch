@@ -1,0 +1,487 @@
+export type QueueLane = "steer" | "followUp";
+
+/** A queued row that executes a Pi command instead of becoming an LLM message. */
+export type QueuedCommand =
+	| { kind: "compact"; instructions?: string }
+	| { kind: "reload" }
+	| { kind: "new" }
+	| { kind: "model"; target?: string }
+	| { kind: "thinking"; level?: string }
+	| { kind: "fabric-prewalk" }
+	| { kind: "fabric-await"; peer?: string };
+
+/**
+ * Parse row text as a queueable command. Commands are recognised at dispatch
+ * and render time, so editing a row into or out of command form just works.
+ */
+export function parseQueuedCommand(text: string): QueuedCommand | undefined {
+	const trimmed = text.trim();
+	if (trimmed === "/reload") return { kind: "reload" };
+	if (trimmed === "/new") return { kind: "new" };
+	if (trimmed === "/model") return { kind: "model" };
+	if (trimmed.startsWith("/model ")) {
+		const target = trimmed.slice("/model ".length).trim();
+		return { kind: "model", target: target || undefined };
+	}
+	if (trimmed === "/thinking") return { kind: "thinking" };
+	if (trimmed.startsWith("/thinking ")) {
+		const level = trimmed.slice("/thinking ".length).trim();
+		return { kind: "thinking", level: level || undefined };
+	}
+	if (/^\/fabric\s+prewalk$/.test(trimmed)) return { kind: "fabric-prewalk" };
+	const fabricAwait = /^\/fabric\s+await(?:\s+(\S+))?$/.exec(trimmed);
+	if (fabricAwait) {
+		return { kind: "fabric-await", ...(fabricAwait[1] ? { peer: fabricAwait[1] } : {}) };
+	}
+	if (trimmed === "/compact") return { kind: "compact" };
+	if (trimmed.startsWith("/compact ")) {
+		const instructions = trimmed.slice("/compact ".length).trim();
+		return { kind: "compact", instructions: instructions || undefined };
+	}
+	return undefined;
+}
+
+/**
+ * True when plain submission content should become a queue row instead of
+ * passing to Pi directly: real text or images, and not Pi's own "/" command
+ * or "!" bash dispatch. Command rows are recognised via parseQueuedCommand.
+ */
+export function isQueueableSubmission(text: string, images?: readonly unknown[]): boolean {
+	const trimmed = text.trim();
+	if (trimmed.startsWith("/") || trimmed.startsWith("!")) return false;
+	return trimmed !== "" || (images?.length ?? 0) > 0;
+}
+
+export interface QueuedMessage<TImage = unknown> {
+	id: string;
+	lane: QueueLane;
+	text: string;
+	images: TImage[];
+	sequence: number;
+	/** Row-level dispatch hold: a paused row stops the global timeline at its
+	 *  position until resumed; rows behind it never jump ahead of it. */
+	paused?: boolean;
+}
+
+/**
+ * One FIFO timeline whose rows retain their steering or follow-up delivery lane.
+ *
+ * Delivery-depth changes preserve global row positions, and sequence remains a
+ * separate enqueue-recency clock so editing can enter at the newest row after
+ * explicit reorders.
+ */
+export class DeliveryQueue<TImage = unknown> {
+	private items: QueuedMessage<TImage>[] = [];
+	private nextIdNumber = 1;
+	private nextSequence = 1;
+
+	enqueue(lane: QueueLane, text: string, images: readonly TImage[] = []): QueuedMessage<TImage> {
+		const prefix = lane === "steer" ? "steer" : "follow-up";
+		const item = {
+			id: `${prefix}-${this.nextIdNumber++}`,
+			lane,
+			text,
+			images: [...images],
+			sequence: this.nextSequence++,
+			paused: false,
+		};
+		this.items.push(item);
+		return this.copy(item);
+	}
+
+	/** Insert interactive steering into the current run, before future run roots. */
+	enqueueSteer(text: string, images: readonly TImage[] = []): QueuedMessage<TImage> {
+		const item = this.enqueue("steer", text, images);
+		const firstRoot = this.items.findIndex((candidate) => candidate.lane === "followUp");
+		if (firstRoot !== -1) {
+			const inserted = this.items.pop()!;
+			this.items.splice(firstRoot, 0, inserted);
+		}
+		return item;
+	}
+
+	prepend(item: QueuedMessage<TImage>): void {
+		this.items.unshift(this.copy(item));
+	}
+
+	prependMany(items: readonly QueuedMessage<TImage>[]): void {
+		for (let index = items.length - 1; index >= 0; index -= 1) {
+			const item = items[index];
+			if (item) this.prepend(item);
+		}
+	}
+
+	update(id: string, text: string, images?: readonly TImage[]): boolean {
+		const item = this.items.find((candidate) => candidate.id === id);
+		if (!item) return false;
+		item.text = text;
+		if (images) item.images = [...images];
+		return true;
+	}
+
+	/** Set a row's dispatch hold. Returns false when the row is missing or already in that state. */
+	setPaused(id: string, paused: boolean): boolean {
+		const item = this.items.find((candidate) => candidate.id === id);
+		if (!item || (item.paused ?? false) === paused) return false;
+		item.paused = paused;
+		return true;
+	}
+
+	/** Swap a row with its lane neighbour in delivery order. Returns false at lane ends. */
+	moveInLane(id: string, direction: -1 | 1): boolean {
+		const item = this.items.find((candidate) => candidate.id === id);
+		if (!item) return false;
+		const laneIndexes: number[] = [];
+		let fromSlot = -1;
+		for (const [index, candidate] of this.items.entries()) {
+			if (candidate.lane !== item.lane) continue;
+			if (candidate.id === id) fromSlot = laneIndexes.length;
+			laneIndexes.push(index);
+		}
+		const fromIndex = laneIndexes[fromSlot];
+		const toIndex = laneIndexes[fromSlot + direction];
+		if (fromIndex === undefined || toIndex === undefined) return false;
+		const moved = this.items[fromIndex];
+		const neighbour = this.items[toIndex];
+		if (!moved || !neighbour) return false;
+		this.items[fromIndex] = neighbour;
+		this.items[toIndex] = moved;
+		return true;
+	}
+
+	/** Swap exact row identities; also used to undo moves despite lane changes. */
+	swapRows(id: string, neighbourId: string): boolean {
+		const from = this.items.findIndex((item) => item.id === id);
+		const to = this.items.findIndex((item) => item.id === neighbourId);
+		const item = this.items[from];
+		const neighbour = this.items[to];
+		if (!item || !neighbour || from === to) return false;
+		this.items[from] = neighbour;
+		this.items[to] = item;
+		return true;
+	}
+
+	/** Move one visible row up or down without changing its delivery depth. */
+	moveInTimeline(id: string, direction: -1 | 1): boolean {
+		const index = this.items.findIndex((item) => item.id === id);
+		const neighbour = index === -1 ? undefined : this.items[index + direction];
+		return neighbour ? this.swapRows(id, neighbour.id) : false;
+	}
+
+	/** Change a row's delivery depth without changing its timeline position. */
+	setLane(id: string, lane: QueueLane): boolean {
+		const item = this.items.find((candidate) => candidate.id === id);
+		if (!item || item.lane === lane) return false;
+		item.lane = lane;
+		return true;
+	}
+
+	remove(id: string): QueuedMessage<TImage> | undefined {
+		const index = this.items.findIndex((item) => item.id === id);
+		if (index === -1) return undefined;
+		const [item] = this.items.splice(index, 1);
+		return item ? this.copy(item) : undefined;
+	}
+
+	peek(): QueuedMessage<TImage> | undefined {
+		const item = this.items[0];
+		return item ? this.copy(item) : undefined;
+	}
+
+	shift(): QueuedMessage<TImage> | undefined {
+		const [item] = this.items.splice(0, 1);
+		return item ? this.copy(item) : undefined;
+	}
+
+	shiftAll(lane: QueueLane): QueuedMessage<TImage>[] {
+		const removed = this.items.filter((item) => item.lane === lane).map((item) => this.copy(item));
+		this.items = this.items.filter((item) => item.lane !== lane);
+		return removed;
+	}
+
+	/**
+	 * Shift an adjacent run from the timeline head while the lane and predicate
+	 * match. A lane switch, command, or paused row ends an `all`-mode batch so
+	 * later rows can never jump across an interleaved delivery boundary.
+	 */
+	shiftWhile(lane: QueueLane, accept: (item: QueuedMessage<TImage>) => boolean): QueuedMessage<TImage>[] {
+		const taken: QueuedMessage<TImage>[] = [];
+		for (;;) {
+			const candidate = this.items[0];
+			if (!candidate || candidate.lane !== lane || !accept(candidate)) break;
+			const [item] = this.items.splice(0, 1);
+			if (!item) break;
+			taken.push(this.copy(item));
+		}
+		return taken;
+	}
+
+	get(id: string): QueuedMessage<TImage> | undefined {
+		const item = this.items.find((candidate) => candidate.id === id);
+		return item ? this.copy(item) : undefined;
+	}
+
+	previousId(currentId?: string): string | undefined {
+		const ordered = this.snapshot();
+		if (ordered.length === 0) return undefined;
+		if (!currentId) return this.mostRecentId();
+		const index = ordered.findIndex((item) => item.id === currentId);
+		if (index <= 0) return ordered.at(-1)?.id;
+		return ordered[index - 1]?.id;
+	}
+
+	nextId(currentId?: string): string | undefined {
+		const ordered = this.snapshot();
+		if (ordered.length === 0) return undefined;
+		if (!currentId) return this.mostRecentId();
+		const index = ordered.findIndex((item) => item.id === currentId);
+		if (index === -1 || index === ordered.length - 1) return ordered[0]?.id;
+		return ordered[index + 1]?.id;
+	}
+
+	mostRecentId(): string | undefined {
+		let newest: QueuedMessage<TImage> | undefined;
+		for (const item of this.items) {
+			if (!newest || item.sequence > newest.sequence) newest = item;
+		}
+		return newest?.id;
+	}
+
+	laneSnapshot(lane: QueueLane): QueuedMessage<TImage>[] {
+		return this.items.filter((item) => item.lane === lane).map((item) => this.copy(item));
+	}
+
+	snapshot(): QueuedMessage<TImage>[] {
+		return this.items.map((item) => this.copy(item));
+	}
+
+	laneLength(lane: QueueLane): number {
+		return this.items.filter((item) => item.lane === lane).length;
+	}
+
+	get length(): number {
+		return this.items.length;
+	}
+
+	/** Restore an in-memory queue snapshot without changing row identity or recency. */
+	restore(items: readonly QueuedMessage<TImage>[]): void {
+		const ids = new Set<string>();
+		let highestIdNumber = 0;
+		let highestSequence = 0;
+		const restored: QueuedMessage<TImage>[] = [];
+		for (const item of items) {
+			if (ids.has(item.id)) throw new Error(`Duplicate queued row ID: ${item.id}`);
+			ids.add(item.id);
+			const idNumber = /-(\d+)$/.exec(item.id)?.[1];
+			if (idNumber) highestIdNumber = Math.max(highestIdNumber, Number.parseInt(idNumber, 10));
+			highestSequence = Math.max(highestSequence, item.sequence);
+			restored.push(this.copy(item));
+		}
+		this.items = restored;
+		this.nextIdNumber = Math.max(this.nextIdNumber, highestIdNumber + 1);
+		this.nextSequence = Math.max(this.nextSequence, highestSequence + 1);
+	}
+
+	/** Persist high-water marks even when every row has been consumed. */
+	identity(): { nextIdNumber: number; nextSequence: number } {
+		return { nextIdNumber: this.nextIdNumber, nextSequence: this.nextSequence };
+	}
+
+	restoreIdentity(identity: { nextIdNumber: number; nextSequence: number }): void {
+		if (![identity.nextIdNumber, identity.nextSequence].every((n) => Number.isSafeInteger(n) && n > 0)) {
+			throw new Error("Invalid queue identity high-water marks");
+		}
+		this.nextIdNumber = Math.max(this.nextIdNumber, identity.nextIdNumber);
+		this.nextSequence = Math.max(this.nextSequence, identity.nextSequence);
+	}
+
+	clear(): void {
+		this.items = [];
+	}
+
+	private copy(item: QueuedMessage<TImage>): QueuedMessage<TImage> {
+		return { ...item, images: [...item.images] };
+	}
+}
+
+interface QueuedMessageDraft<TImage> {
+	id: string;
+	text: string;
+	images: TImage[];
+	lane: QueueLane;
+	removed: boolean;
+	paused: boolean;
+}
+
+export interface EditCommitResult {
+	updated: number;
+	removed: number;
+	moved: number;
+	/** Rows whose dispatch hold was engaged by this save. */
+	held: number;
+	/** Rows whose dispatch hold was lifted by this save. */
+	released: number;
+}
+
+/** Rollback-safe drafts spanning rows from either delivery lane. */
+export class QueueEditSession<TImage = unknown> {
+	private readonly drafts = new Map<string, QueuedMessageDraft<TImage>>();
+	private readonly positionMoves: { id: string; neighbourId: string }[] = [];
+	private currentId: string;
+	readonly composerDraft: string;
+
+	constructor(item: QueuedMessage<TImage>, composerDraft: string) {
+		this.currentId = item.id;
+		this.composerDraft = composerDraft;
+		this.drafts.set(item.id, this.newDraft(item));
+	}
+
+	private newDraft(item: QueuedMessage<TImage>): QueuedMessageDraft<TImage> {
+		return { id: item.id, text: item.text, images: [...item.images], lane: item.lane, removed: false, paused: item.paused ?? false };
+	}
+
+	get selectedId(): string {
+		return this.currentId;
+	}
+
+	get selectedText(): string {
+		return this.drafts.get(this.currentId)?.text ?? "";
+	}
+
+	capture(text: string, images?: readonly TImage[]): void {
+		const draft = this.drafts.get(this.currentId);
+		if (!draft) return;
+		draft.text = text;
+		if (images) draft.images = [...images];
+	}
+
+	select(item: QueuedMessage<TImage>, currentText: string, images?: readonly TImage[]): string {
+		this.capture(currentText, images);
+		if (!this.drafts.has(item.id)) {
+			this.drafts.set(item.id, this.newDraft(item));
+		}
+		this.currentId = item.id;
+		return this.selectedText;
+	}
+
+	/**
+	 * Move a row in the visible timeline immediately, recording the inverse so cancel
+	 * restores positions. Position changes apply to dispatch order at once;
+	 * Escape replays the inverses newest-first.
+	 */
+	moveRow(queue: DeliveryQueue<TImage>, id: string, direction: -1 | 1): boolean {
+		const rows = queue.snapshot();
+		const index = rows.findIndex((item) => item.id === id);
+		const neighbour = index === -1 ? undefined : rows[index + direction];
+		if (!neighbour || !queue.swapRows(id, neighbour.id)) return false;
+		this.positionMoves.push({ id, neighbourId: neighbour.id });
+		return true;
+	}
+
+	/** Committed position projection for persistence, without consuming the rollback log. */
+	committedPositions(queue: DeliveryQueue<TImage>): QueuedMessage<TImage>[] {
+		const committed = new DeliveryQueue<TImage>();
+		committed.restore(queue.snapshot());
+		for (let index = this.positionMoves.length - 1; index >= 0; index -= 1) {
+			const move = this.positionMoves[index];
+			if (move) committed.swapRows(move.id, move.neighbourId);
+		}
+		return committed.snapshot();
+	}
+
+	/** Undo in-session reorders, newest first. Best-effort if rows left mid-session. */
+	rollbackPositions(queue: DeliveryQueue<TImage>): void {
+		for (let index = this.positionMoves.length - 1; index >= 0; index -= 1) {
+			const move = this.positionMoves[index];
+			if (move) queue.swapRows(move.id, move.neighbourId);
+		}
+		this.positionMoves.length = 0;
+	}
+
+	/** Toggle whether the row is deleted on save. Returns the new mark. */
+	toggleRemoved(id: string): boolean | undefined {
+		const draft = this.drafts.get(id);
+		if (!draft) return undefined;
+		draft.removed = !draft.removed;
+		return draft.removed;
+	}
+
+	/** Set the row's draft delivery depth. Returns the effective lane. */
+	setLane(id: string, lane: QueueLane): QueueLane | undefined {
+		const draft = this.drafts.get(id);
+		if (!draft) return undefined;
+		draft.lane = lane;
+		return draft.lane;
+	}
+
+	/** Legacy toggle for terminals where Option+Arrow cannot be distinguished. */
+	toggleLane(id: string): QueueLane | undefined {
+		const draft = this.drafts.get(id);
+		return draft ? this.setLane(id, draft.lane === "steer" ? "followUp" : "steer") : undefined;
+	}
+
+	/** Toggle the row's draft dispatch hold. Returns the new paused state. */
+	togglePaused(id: string): boolean | undefined {
+		const draft = this.drafts.get(id);
+		if (!draft) return undefined;
+		draft.paused = !draft.paused;
+		return draft.paused;
+	}
+
+	/** The row's drafted dispatch hold, or undefined when the session never touched it. */
+	pausedFor(id: string): boolean | undefined {
+		const draft = this.drafts.get(id);
+		return draft ? draft.paused : undefined;
+	}
+
+	laneFor(id: string): QueueLane | undefined {
+		return this.drafts.get(id)?.lane;
+	}
+
+	isRemoved(id: string): boolean {
+		return this.drafts.get(id)?.removed ?? false;
+	}
+
+	touches(id: string): boolean {
+		return this.drafts.has(id);
+	}
+
+	touchesLane(queue: DeliveryQueue<TImage>, lane: QueueLane): boolean {
+		return queue.laneSnapshot(lane).some((item) => this.touches(item.id));
+	}
+
+	textFor(id: string): string | undefined {
+		return this.drafts.get(id)?.text;
+	}
+
+	imagesFor(id: string): TImage[] | undefined {
+		const images = this.drafts.get(id)?.images;
+		return images ? [...images] : undefined;
+	}
+
+	commit(
+		queue: DeliveryQueue<TImage>,
+		currentText: string,
+		images?: readonly TImage[],
+	): EditCommitResult {
+		this.capture(currentText, images);
+		let updated = 0;
+		let removed = 0;
+		let moved = 0;
+		let held = 0;
+		let released = 0;
+		for (const draft of this.drafts.values()) {
+			if (draft.removed || (!draft.text.trim() && draft.images.length === 0)) {
+				if (queue.remove(draft.id)) removed += 1;
+				continue;
+			}
+			if (queue.update(draft.id, draft.text, draft.images)) updated += 1;
+			if (queue.setLane(draft.id, draft.lane)) moved += 1;
+			if (queue.setPaused(draft.id, draft.paused)) {
+				if (draft.paused) held += 1;
+				else released += 1;
+			}
+		}
+		return { updated, removed, moved, held, released };
+	}
+}
