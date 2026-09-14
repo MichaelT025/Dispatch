@@ -14,6 +14,8 @@ import { createWorkerProgress } from './worker-render.ts';
 import { agentOrder, createAgents } from './agents.mjs';
 import { createFilePrefsStore } from './prefs.mjs';
 import { createWorkerSidebar } from './sidebar.mjs';
+import { createSessionPhaseGuard, finalizeOutstandingWorkers, registerWorkerGuard, sessionPhaseGuardMessage, settleWorkerBatch, workerGuardMessage } from './guard.mjs';
+import { installShortcuts } from './shortcuts.ts';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const config = JSON.parse(readFileSync(path.join(root, 'config/agents.json'), 'utf8'));
@@ -57,7 +59,18 @@ export default function (pi: ExtensionAPI) {
   const agents = createAgents(pi, config, store);
   const workerViews = new Map<number, any>();
   const sidebar = createWorkerSidebar(pi.events, workerViews);
-  pi.on('session_shutdown', async () => sidebar.dispose());
+  const sessionPhases = createSessionPhaseGuard();
+  const workerGuard = registerWorkerGuard(pi.events, workerViews, sessionPhases);
+  // ctx.isIdle() only tracks the agent run; compaction and branch summarization
+  // run outside it. The session lifecycle events are the supported way for an
+  // extension to observe those phases (ExtensionContext has no isCompacting).
+  pi.on('session_before_compact', async () => { sessionPhases.beforeCompact(); });
+  pi.on('session_compact', async () => { sessionPhases.afterCompact(); });
+  pi.on('session_compact_failed', async () => { sessionPhases.afterCompact(); });
+  pi.on('session_before_tree', async event => { sessionPhases.beforeTree(event); });
+  pi.on('session_tree', async () => { sessionPhases.afterTree(); });
+  pi.on('session_start', async () => { sessionPhases.reset(); });
+  pi.on('session_shutdown', async () => { workerGuard.dispose(); sessionPhases.reset(); sidebar.dispose(); });
   let nextWorkerId = 0;
   let viewerOpen = false;
   const openWorkers = async (ctx: any) => {
@@ -83,6 +96,18 @@ export default function (pi: ExtensionAPI) {
   };
   pi.on('session_start', restoreWorkers);
   pi.on('session_tree', restoreWorkers);
+  // Defence in depth for the /worktree handshake (and every other switch path):
+  // never replace the session while delegated workers or a compaction/branch
+  // summary are still running.
+  pi.on('session_before_switch', async (_event, ctx) => {
+    const active = workerGuard.count();
+    const message = active > 0
+      ? workerGuardMessage(active)
+      : sessionPhaseGuardMessage({ compacting: sessionPhases.compacting(), summarizing: sessionPhases.summarizing() });
+    if (!message) return;
+    ctx.ui.notify(message, 'warning');
+    return { cancel: true };
+  });
   // Single delegation system: pi-web-ui's inline subagent/delegate_task tools
   // (registered by the fork server when its UI toggles are re-enabled) are
   // hard-blocked here, not merely hidden in the settings panel.
@@ -100,15 +125,26 @@ export default function (pi: ExtensionAPI) {
   pi.on('session_tree', async (_event, ctx) => attempt(() => agents.restore(ctx), ctx));
   pi.on('model_select', (event, ctx) => agents.modelChanged(event, ctx));
   pi.on('thinking_level_select', (event, ctx) => agents.thinkingChanged(event, ctx));
+  // Shared between /agent and the editor shortcuts' agent picker.
+  const pickAgent = async (args: string, ctx: any) => {
+    const role = args.trim().toLowerCase() || (ctx.hasUI ? await ctx.ui.select(`Agent: ${agents.active}`, agentOrder) : undefined);
+    if (role) await attempt(() => agents.select(role, ctx), ctx);
+    else if (!ctx.hasUI) ctx.ui.notify(`Active: ${agents.active}. Use /agent ${agentOrder.join('|')}`, 'info');
+  };
   pi.registerCommand('agent', {
     description: 'Select PiAstra agent: orchestrator, general, fast, review',
-    handler: async (args, ctx) => {
-      const role = args.trim().toLowerCase() || (ctx.hasUI ? await ctx.ui.select(`Agent: ${agents.active}`, agentOrder) : undefined);
-      if (role) await attempt(() => agents.select(role, ctx), ctx);
-      else if (!ctx.hasUI) ctx.ui.notify(`Active: ${agents.active}. Use /agent ${agentOrder.join('|')}`, 'info');
-    }
+    handler: async (args, ctx) => pickAgent(args, ctx)
   });
   pi.registerShortcut('ctrl+shift+a', { description: 'Cycle PiAstra agent', handler: async ctx => attempt(() => agents.cycle(ctx), ctx) });
+  // Editor-scoped shortcuts (docs/shortcuts.md): Shift+Tab cycles agents,
+  // Ctrl+T cycles thinking level, Ctrl+X arms a short leader where
+  // t toggles thinking, y copies the last message, a opens this picker and
+  // w opens the worker overlay. Existing ctrl+shift+a/w aliases stay.
+  installShortcuts(pi, {
+    cycleAgents: ctx => attempt(() => agents.cycle(ctx), ctx),
+    openAgentPicker: ctx => pickAgent('', ctx),
+    openWorkers: ctx => attempt(() => openWorkers(ctx), ctx),
+  });
   pi.on('before_agent_start', async event => {
     const instructions = agents.active === 'orchestrator'
       ? 'Use delegate for bounded tasks. Choose as many concurrent workers as the task needs, including editing workers. Coordinate file ownership and dependencies to avoid conflicting edits; there is no worker-count cap or batch queue. Workers receive only the task you supply, plus project instructions, never the parent conversation. Include requirements, useful paths, and the exact milestone Git baseline for reviews. Keep a review target stable while it is inspected. Worker read access excludes shell, write and edit; it includes inspect_git and fetch_url. Run checks yourself or use a write-capable worker. Full worker transcripts are saved outside the project. Do not read them unless the concise result is insufficient.'
@@ -119,7 +155,7 @@ export default function (pi: ExtensionAPI) {
     description: 'Show PiAstra roles and delegation availability',
     handler: async (_args, ctx) => {
       const summary = agentOrder.map(name => { const value = agents.selection(name); return `${name}: ${value.model}${value.thinking ? ` (${value.thinking})` : ''}`; }).join('\n');
-      ctx.ui.notify(`Active: ${agents.active}\n${summary}\nCWD: ${ctx.cwd}\n/agent selects; Ctrl+Shift+A cycles.\nDelegate: uncapped parallel workers; Ctrl+O expands live activity.`, 'info');
+      ctx.ui.notify(`Active: ${agents.active}\n${summary}\nCWD: ${ctx.cwd}\n/agent selects; Ctrl+Shift+A cycles.\nShortcuts: Shift+Tab cycles agents · Ctrl+T thinking · Ctrl+X then t/y/a/w.\nDelegate: uncapped parallel workers; Ctrl+O expands live activity.`, 'info');
     }
   });
   pi.registerTool({
@@ -144,15 +180,19 @@ export default function (pi: ExtensionAPI) {
         sidebar.publish();
         onUpdate?.(result(progressText(workers), { workers: workers.map(w => ({ ...w, recent: [...w.recent] })) }));
       };
-      const ticker = setInterval(publish, 250);
-      publish();
+      // UI publication failures (a disposed sidebar or a throwing onUpdate)
+      // must not reject a worker task or mask its cleanup; the guard and worker
+      // lifecycle must keep moving even when the view cannot be refreshed.
+      const publishSafely = () => { try { publish(); } catch { /* keep worker lifecycle moving */ } };
+      const ticker = setInterval(publishSafely, 250);
       try {
+        publish();
         signal?.throwIfAborted();
         const agentDir = getAgentDir();
         runtime ??= ModelRuntime.create({ authPath: path.join(agentDir, 'auth.json'), modelsPath: path.join(agentDir, 'models.json'), modelsStorePath: path.join(agentDir, 'models-store.json'), allowModelNetwork: true });
         let models: ModelRuntime;
         try { models = await runtime; } catch (error) { runtime = undefined; throw error; }
-        const completed = await Promise.all(params.tasks.map(async (task, index) => {
+        const completed = await settleWorkerBatch(params.tasks.map(async (task, index) => {
           const worker = workers[index];
           const selected = selections[index];
           const slash = selected.model.indexOf('/');
@@ -194,17 +234,29 @@ export default function (pi: ExtensionAPI) {
             return { role: task.role, model: selected.model, ok: false, text: error.message, transcript };
           } finally {
             worker.ended = Date.now();
-            publish();
+            publishSafely();
             if (abort) cancel.removeEventListener('abort', abort);
             // Retain the final in-memory transcript to avoid replacing the visible
             // stream with an empty or partially flushed file on completion.
             const finalMessages = session ? [...session.state.messages] : undefined;
             const record = workerViews.get(worker.id);
             if (record && finalMessages) record.getMessages = () => finalMessages;
-            session?.dispose();
+            try { session?.dispose(); } catch { /* teardown must not reject the batch */ }
           }
         }));
         return result(completed.map(r => `${r.role} · ${r.model} · ${r.ok ? 'completed' : 'FAILED'}\n${r.text}\nTranscript: ${r.transcript || '(none)'}`).join('\n\n'), { results: completed, workers });
+      } catch (error: any) {
+        // `settleWorkerBatch` only throws after every worker promise settled, so
+        // no sibling is still running when the batch is finalized and the guard
+        // releases. Failures before the batch (runtime/session initialization,
+        // an early abort, the initial publish) leave their workers `starting`.
+        const cancelled = !!signal?.aborted;
+        finalizeOutstandingWorkers(workers, {
+          reason: cancelled ? 'Delegation was cancelled before this worker finished.' : error?.message,
+          cancelled,
+        });
+        publishSafely();
+        throw error;
       } finally { clearInterval(ticker); }
     }
   });

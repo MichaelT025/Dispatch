@@ -8,11 +8,19 @@ export function createWorkerSidebar(events, workerViews) {
     const active = workers.filter(worker => ['starting', 'running'].includes(worker.status));
     const recent = workers.filter(worker => !active.includes(worker)).slice(-3).reverse();
     const visible = [...active, ...recent].slice(0, 7);
-    const rows = visible.flatMap(worker => [
-      { text: `#${worker.id} ${worker.role} · ${worker.status}`, role: worker.status === 'failed' ? 'error' : active.includes(worker) ? 'working' : 'muted' },
-      { text: worker.task, role: 'primary' },
-      { text: `${worker.model} · ${worker.activity || ''}`, role: 'dim' },
-    ]);
+    const now = Date.now();
+    const rows = visible.flatMap(worker => {
+      // Running workers use the current time; completed workers keep their end time.
+      const elapsed = Math.max(0, Math.floor(((worker.ended ?? now) - (worker.started ?? now)) / 1000));
+      const activity = String(worker.activity || 'Starting').replace(/\s+/g, ' ').slice(0, 150);
+      const task = String(worker.task || '').replace(/\s+/g, ' ').slice(0, 150);
+      const role = worker.status === 'failed' || worker.status === 'cancelled' ? 'error' : active.includes(worker) ? 'working' : 'muted';
+      return [
+        { text: `#${worker.id} ${worker.role} · ${worker.status} · ${elapsed}s`, role },
+        { text: task, role: 'primary' },
+        { text: `${activity} · ${worker.model || 'worker'}`, role: 'dim' },
+      ];
+    });
     if (!workers.length) rows.push({ text: 'No workers yet', role: 'muted' });
     if (active.length > visible.length) rows.push({ text: `${active.length - visible.length} more active workers`, role: 'working' });
     rows.push({ text: 'Ctrl+Shift+W: open workers', role: 'accent' });

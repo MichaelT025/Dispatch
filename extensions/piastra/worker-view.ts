@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { truncateToWidth, matchesKey } from '@earendil-works/pi-tui';
-import { plainLines, renderTranscript, safe, statusStyle } from './worker-render.ts';
+import { plainLines, renderTranscript, safe, statusStyle, toolSummary } from './worker-render.ts';
 
 export const workerOverlayOptions = { overlay: true, overlayOptions: { width: '100%' as const, maxHeight: '100%' as const, anchor: 'top-left' as const, margin: 0 } };
 
@@ -9,10 +9,13 @@ export function messageText(messages: any[]) {
   return messages.map(message => {
     const content = typeof message.content === 'string' ? message.content : (message.content || []).map((part: any) => {
       if (part.type === 'text') return part.text;
-      if (part.type === 'toolCall') return `→ ${part.name}\n${JSON.stringify(part.arguments, null, 2)}`;
+      if (part.type === 'toolCall') return `→ ${toolSummary(part.name, part.arguments)}`;
       return '';
     }).filter(Boolean).join('\n');
-    return content ? `${message.role === 'toolResult' ? `TOOL ${message.toolName}${message.isError ? ' · FAILED' : ''}` : message.role.toUpperCase()}\n${safe(content).slice(0, 30000)}` : '';
+    if (!content) return '';
+    return message.role === 'toolResult'
+      ? `${message.isError ? '✗' : '✓'} ${toolSummary(message.toolName)}\n${safe(content).slice(0, 30000)}`
+      : safe(content).slice(0, 30000);
   }).filter(Boolean).join('\n\n');
 }
 

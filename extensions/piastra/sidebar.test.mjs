@@ -21,6 +21,11 @@ test('sidebar handles late discovery, deduplicates updates and cleans up', () =>
   assert.equal(update.panel.title, 'Workers · 20 active');
   assert.ok(update.panel.rows.length <= 24);
   assert.ok(update.panel.rows.some(row => row.text === '13 more active workers'));
+  const live = { id: 21, role: 'fast', status: 'running', started: Date.now() - 4000, activity: 'Reading target', task: 'Check target', model: 'test/model' };
+  views.clear();
+  views.set(21, { worker: live });
+  sidebar.publish();
+  assert.match(emitted.at(-1).panel.rows.find(row => row.text.startsWith('#21')).text, / · [34]s$/);
   views.clear(); sidebar.publish();
   assert.equal(emitted.at(-1).panel.title, 'Workers · 0 active');
   sidebar.dispose();

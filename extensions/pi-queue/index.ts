@@ -1,0 +1,2123 @@
+import type { Api, ImageContent, Model, TextContent } from "@earendil-works/pi-ai";
+import { isContextOverflow } from "@earendil-works/pi-ai/compat";
+import {
+	CustomEditor,
+	keyText,
+	SettingsManager,
+	type ExtensionAPI,
+	type ExtensionCommandContext,
+	type ExtensionContext,
+	type Theme,
+	type ThemeColor,
+} from "@earendil-works/pi-coding-agent";
+import {
+	getKeybindings,
+	matchesKey,
+	truncateToWidth,
+	visibleWidth,
+	type Component,
+	type EditorComponent,
+	type KeyId,
+} from "@earendil-works/pi-tui";
+import { registerConversationQueueBridge } from "./conversation-queue-bridge.ts";
+import { sendUserMessageWithAck, type AckSendOptions } from "./delivery.ts";
+import {
+	buildTimelineItems,
+	compactText,
+	INDENT_ROW_KEY,
+	itemCommand,
+	laneLabel,
+	laneIsHeld as laneIsHeldShared,
+	nextRowKeys,
+	OUTDENT_ROW_KEY,
+	PAUSE_ROW_KEY,
+	QueueTimelineWidget,
+	REMOVE_ROW_KEY,
+	REORDER_DOWN_KEY,
+	REORDER_UP_KEY,
+	TOGGLE_LANE_KEY,
+	type QueueModes,
+	type TimelineItem,
+} from "./timeline-render.ts";
+import { extractInlineEditorLines } from "./editor-render.ts";
+import { requestFabricPeerAwait, requestFabricPeerCards, type FabricPeerCard } from "./fabric-peers.ts";
+import { requestFabricPrewalk } from "./fabric-prewalk.ts";
+import { expandQueuedInput, isExpandableSlashCommand, queuesDuringCompaction } from "./queued-input.ts";
+import { latestQueueSnapshot, persistQueueSnapshot, persistQueueTombstone } from "./queue-persistence.ts";
+import {
+	DeliveryQueue,
+	isQueueableSubmission,
+	parseQueuedCommand,
+	QueueEditSession,
+	type QueuedCommand,
+	type QueuedMessage,
+	type QueueLane,
+} from "./queue-state.ts";
+
+const WIDGET_ID = "piastra.queue.timeline";
+const EDITOR_FEATURES = Symbol.for("@tmustier/pi-editor-features");
+const QUEUE_STEER_FEATURE = "queue-steer";
+const NEXT_ROW_FALLBACK_KEY: KeyId = "alt+down";
+const SUBMIT_GUARD = Symbol.for("@tmustier/pi-queue-steer.submit-guard");
+
+/** Interop channel for peer extensions (e.g. pi-ledger, which defers its
+ *  no-credit engagement wizard while the queue parks undispatched rows). The
+ *  latest snapshot is emitted on pi.events under this name on every change. */
+export const QUEUE_STEER_STATE_EVENT = "queue-steer:state";
+/** PiAstra alias of the interop channel, kept for pre-rename listeners. */
+export const QUEUE_STEER_STATE_EVENT_ALIAS = "piastra:queue:state";
+
+/** Atelier sidebar panel publisher (protocol: pi-atelier:sidebar-panels). */
+import { createQueueSidebar } from "./sidebar.mjs";
+
+export interface QueueSteerState {
+	/** Rows still held by the queue — both lanes, including paused/held rows. */
+	pending: number;
+	/** Dispatch paused (aborted turn, failed preparation, agent error hold, or manual pause). */
+	paused: boolean;
+	/** A blocking control row (/compact, /model, /thinking, /new, /reload, prewalk) is executing. */
+	blocked: boolean;
+}
+
+/** Queue state parked on globalThis across Pi's in-process runtime swaps. */
+interface RuntimeStash {
+	reason?: "reload" | "new";
+	paused: boolean;
+	rows: QueuedMessage<ImageContent>[];
+	/** Outgoing session model, stashed by a queued /new: Pi resolves a fresh
+	 *  session's model from the shared saved default (the last model any
+	 *  session persisted) or the first scoped model, not from the session the
+	 *  tail was queued under, so the handoff re-applies it. */
+	model?: { provider: string; id: string };
+}
+declare global {
+	// Keep the legacy key so an update from pi-queue-steer 0.3.x cannot lose rows.
+	var __tmustierPiQueueSteerReloadStash: RuntimeStash | undefined;
+	/** Latest published queue snapshot, mirrored for synchronous interop reads
+	 *  (immune to extension load / listener registration order). */
+	var __tmustierPiQueueSteerState: QueueSteerState | undefined;
+	// PiAstra aliases of both mirrors, kept for pre-rename readers.
+	var __piastraPiQueueReloadStash: RuntimeStash | undefined;
+	var __piastraPiQueueState: QueueSteerState | undefined;
+}
+const DRAIN_COMMAND = "queue-drain";
+const DRAIN_COMMAND_ALIAS = "piastra-queue-drain";
+const PAUSE_COMMAND = "pause";
+const INTERNAL_NEW_COMMAND = "queue-steer-factory-new";
+// Grace window for Pi's post-compaction flush of natively parked composer
+// input to start its run before the latched compaction concludes anyway.
+export const NATIVE_FLUSH_GRACE_MS = 2000;
+const AWAIT_PEERS_KEY = "alt+w";
+
+type EditorFactory = NonNullable<ReturnType<ExtensionContext["ui"]["getEditorComponent"]>>;
+type ComposedEditorFactory = EditorFactory & { [EDITOR_FEATURES]?: ReadonlySet<string> };
+type InlineEditorRenderer = (width: number) => string[];
+
+function editorFeatures(factory: EditorFactory | undefined): ReadonlySet<string> {
+	return (factory as ComposedEditorFactory | undefined)?.[EDITOR_FEATURES] ?? new Set();
+}
+
+function matchesOptionArrow(data: string, direction: "left" | "right"): boolean {
+	const arrow = direction === "left" ? OUTDENT_ROW_KEY : INDENT_ROW_KEY;
+	const wordAlias: KeyId = direction === "left" ? "alt+b" : "alt+f";
+	// Pi recognizes Alt+B/F as terminal fallbacks for word movement. Do not
+	// steal those distinct inputs when matching the physical Option+Arrow key.
+	return matchesKey(data, arrow) && !matchesKey(data, wordAlias);
+}
+
+// The widget body lives in ./timeline-render.ts, shared verbatim with the
+// conversation-queue bridge so peer UIs render the same execution outline.
+
+function userContent(item: QueuedMessage<ImageContent>): string | (TextContent | ImageContent)[] {
+	if (item.images.length === 0) return item.text;
+	return [{ type: "text", text: item.text }, ...item.images];
+}
+
+/**
+ * Combined drain payload: row texts joined in timeline order, with every
+ * row's image attachments appended in the same order.
+ */
+function mergedDrainContent(items: readonly QueuedMessage<ImageContent>[]): string | (TextContent | ImageContent)[] {
+	const text = items
+		.map((item) => item.text)
+		.filter((line) => line !== "")
+		.join("\n")
+		.trim();
+	const images = items.flatMap((item) => item.images);
+	if (images.length === 0) return text;
+	return [{ type: "text", text }, ...images];
+}
+
+/** Canonical thinking levels, mirroring Pi's THINKING_LEVEL_OPTIONS order. */
+const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
+
+function commandLabel(command: QueuedCommand): string {
+	switch (command.kind) {
+		case "compact": return "/compact";
+		case "reload": return "/reload";
+		case "new": return "/new";
+		case "model": return "/model";
+		case "thinking": return "/thinking";
+		case "fabric-prewalk": return "/fabric prewalk";
+	case "fabric-await": return "/fabric await";
+	}
+}
+
+function relativeAge(ms: number): string {
+	const clamped = Math.max(0, ms);
+	if (clamped < 10_000) return "now";
+	if (clamped < 90_000) return `${Math.round(clamped / 1000)}s`;
+	if (clamped < 90 * 60_000) return `${Math.round(clamped / 60_000)}m`;
+	return `${Math.round(clamped / 3_600_000)}h`;
+}
+
+function formatPeerCard(card: FabricPeerCard): string {
+	const model = card.model?.split("/").pop();
+	const bits = [card.label];
+	if (model) bits.push(model);
+	bits.push(card.status, `started ${relativeAge(Date.now() - card.startedAt)} ago`);
+	return `${card.status === "running" ? "●" : "○"} ${bits.join(" · ")}`;
+}
+
+/**
+ * Every recognised control command parks as a paused row on a stopped
+ * Option+Enter, /compact and /reload included — the same rule messages,
+ * skills and templates follow. Only other built-ins, extension commands,
+ * unknown slash input and bash still run immediately.
+ */
+function queuesWhileStopped(command: QueuedCommand | undefined): boolean {
+	return command !== undefined;
+}
+
+function availableModels(context: ExtensionContext): Model<Api>[] {
+	const source = context.scopedModels.length > 0
+		? context.scopedModels.map((scoped) => scoped.model)
+		: context.modelRegistry.getAvailable();
+	const unique = new Map<string, Model<Api>>();
+	for (const model of source) unique.set(`${model.provider}/${model.id}`, model);
+	return [...unique.values()];
+}
+
+function exactModel(reference: string, models: readonly Model<Api>[]): Model<Api> | undefined {
+	const target = reference.trim();
+	const separator = target.indexOf("/");
+	if (separator > 0) {
+		const provider = target.slice(0, separator);
+		const id = target.slice(separator + 1);
+		return models.find((model) => model.provider === provider && model.id === id);
+	}
+	const matches = models.filter((model) => model.id === target);
+	return matches.length === 1 ? matches[0] : undefined;
+}
+
+function modelChoices(search: string | undefined, models: readonly Model<Api>[]): string[] {
+	const query = search?.trim().toLowerCase();
+	return models
+		.filter((model) => {
+			if (!query) return true;
+			return `${model.provider}/${model.id} ${model.name ?? ""}`.toLowerCase().includes(query);
+		})
+		.map((model) => `${model.provider}/${model.id}`)
+		.sort((left, right) => left.localeCompare(right));
+}
+
+import { headDeliveryBatch, shouldHoldFailedRun, canRecoverCompaction } from "./queue-policy.ts";
+
+export default function queueSteerExtension(pi: ExtensionAPI) {
+	const queue = new DeliveryQueue<ImageContent>();
+	// Peer-UI interop (pi-fabric focused conversations): serves versioned
+	// conversation-queue handshakes with a bridge over this extension's real
+	// queue state machinery. Unsubscribed on session_shutdown below.
+	const unsubscribeConversationQueueBridge = registerConversationQueueBridge(pi);
+	let editSession: QueueEditSession<ImageContent> | undefined;
+	let activeContext: ExtensionContext | undefined;
+	let renderInlineEditor: InlineEditorRenderer | undefined;
+	let editorInstallTimer: ReturnType<typeof setTimeout> | undefined;
+	let baseEditorFactory: EditorFactory | undefined;
+	let baseEditorFactoryCaptured = false;
+	let commandSubmitTimer: ReturnType<typeof setTimeout> | undefined;
+	let renderingInline = false;
+	let paused = false;
+	// Serial dispatch guard: a queued send can span several preflight boundaries
+	// before its acknowledgement settles. While one send is in flight, repeat
+	// Enter/boundary/drain triggers must not start a second send for the same
+	// rows; new rows may still enqueue behind it.
+	let dispatchInFlight = false;
+	// Rows awaiting Pi's preflight ack. They stay in the queue (so crash and
+	// shutdown snapshots still contain them) but must not be edited, removed or
+	// re-dispatched until the ack settles.
+	const inFlightIds = new Set<string>();
+	// Incremented on teardown so late ack callbacks cannot mutate stale pi/ctx
+	// or a replacement runtime's queue state.
+	let lifecycleGeneration = 0;
+	// Runs that end in an error (or context overflow) park the queue behind an
+	// error hold alongside the pause: Pi's built-in retry and auto-compaction
+	// settle only after that agent_end, and external retry loops such as
+	// pi-retry re-prompt from the idle signal, so any row dispatched before
+	// recovery would jump ahead of it. The hold lifts at the first healthy
+	// assistant tail and releases its pause; every other pause or resume path
+	// below clears the hold, so recovery never lifts a pause the user — or
+	// another failure — asked for. Runs that settle still failed keep their
+	// rows parked for an explicit empty-composer Enter.
+	let errorHold = false;
+	// Graceful run pause: /pause with tool work in flight holds fire until every
+	// in-flight tool call finishes, so pausing never kills a tool mid-execution.
+	// The completion then stops the run at the tool boundary.
+	let pauseAfterToolsArmed = false;
+	const inFlightTools = new Map<string, string>();
+	let settingsManager: SettingsManager | undefined;
+	let blockingActivity: "compact" | "auto-compact" | "reload" | "new" | "model" | "thinking" | "fabric-prewalk" | "fabric-await" | undefined;
+	let fabricAwaitAbort: AbortController | undefined;
+	let fabricAwaitNote = "";
+	let pendingNewRowId: string | undefined;
+	let plannedNewSession = false;
+	let compactionFinishTimer: ReturnType<typeof setTimeout> | undefined;
+	let nativeCompactionInputQueued = false;
+	let nativeCompactionTurnStarted = false;
+	// Pi parks composer input submitted during a compaction in its private
+	// post-compaction queue and flushes it as a run afterwards. The latch waits
+	// for that flush run to turn_start and settle; when the flush instead dies
+	// quietly (prompt preflight rejection, an aborted tail, a command that never
+	// runs), nothing would ever settle again and the latch would stick forever.
+	// A grace deadline concludes the activity when no flushed turn materialized.
+	let nativeFlushGraceTimer: ReturnType<typeof setTimeout> | undefined;
+	let compactionEpoch = 0;
+	let extensionCompactionInFlight = false;
+	// A compact-and-retry that ended in session_compact_failed is not recovery:
+	// the error hold stays parked for an explicit Enter instead of releasing at
+	// the compaction settle.
+	let compactionRecoveryFailed = false;
+	// Only an overflow compaction recovers a run that died with context
+	// overflow; a threshold compaction after an error is context housekeeping
+	// and must not release the error hold.
+	let compactionIsOverflowRecovery = false;
+	const isCompacting = (): boolean => blockingActivity === "compact" || blockingActivity === "auto-compact";
+	const trackNativeCompactionSubmission = (
+		text: string,
+		behavior: "submit" | "followUp" = "submit",
+	): void => {
+		if (isCompacting() && queuesDuringCompaction(text, pi.getCommands(), behavior)) {
+			nativeCompactionInputQueued = true;
+		}
+	};
+	// Pi's own editor submit handler, captured by the submit guard. Replaying text
+	// through it is the only public route to the built-in /reload.
+	let tuiSubmit: ((text: string) => void) | undefined;
+
+	const queueModes = (): QueueModes => ({
+		steer: settingsManager?.getSteeringMode() ?? "one-at-a-time",
+		followUp: settingsManager?.getFollowUpMode() ?? "one-at-a-time",
+	});
+
+	/**
+	 * Park the queue behind an error hold after a failed run tail. An
+	 * already-paused queue keeps its existing pause reason — the hold is only
+	 * set when the error itself caused the pause, and releases nothing else.
+	 * Empty queues have nothing to protect.
+	 */
+	const pauseForFailedRun = (ctx: ExtensionContext): void => {
+		if (queue.length === 0) {
+			renderQueue(ctx);
+			return;
+		}
+		if (shouldHoldFailedRun(paused, queue.length > 0)) {
+			errorHold = true;
+			paused = true;
+		}
+		renderQueue(ctx);
+	};
+
+	/** Generic pause, unrelated to run recovery: supersedes any error hold. */
+	const pauseQueue = (): void => {
+		errorHold = false;
+		paused = true;
+	};
+
+	/** Explicit go: clear the pause together with any error hold behind it. */
+	const resumeQueue = (): void => {
+		errorHold = false;
+		paused = false;
+	};
+
+	/**
+	 * Stop the run at the tool boundary: the finishing tool's result is
+	 * already recorded, so nothing is killed mid-flight. The aborted tail
+	 * keeps the visible queue paused through the usual turn_end path; the
+	 * keyboard interrupt stays the abrupt alternative.
+	 */
+	const stopRunAtToolBoundary = (ctx: ExtensionContext): void => {
+		pauseAfterToolsArmed = false;
+		pauseQueue();
+		ctx.abort();
+		renderQueue(ctx);
+		ctx.ui.notify(
+			queue.length > 0
+				? `Tool call finished; run paused — ${keyText("tui.input.submit")} on the empty composer resumes the queue`
+				: "Tool call finished; run paused",
+			"info",
+		);
+	};
+
+	const pauseAfterPreparationFailure = (ctx: ExtensionContext, lane: QueueLane, error: unknown): void => {
+		pauseQueue();
+		renderQueue(ctx);
+		ctx.ui.notify(
+			`Could not prepare queued ${laneLabel(lane)}; queue paused: ${error instanceof Error ? error.message : String(error)}`,
+			"error",
+		);
+	};
+
+	const laneIsHeld = (lane: QueueLane): boolean =>
+		laneIsHeldShared(queue, editSession, queueModes(), lane);
+
+	/** Reorder spatially, including during depth edits; Escape restores positions. */
+	const reorderSelectedRow = (ctx: ExtensionContext, direction: -1 | 1): void => {
+		const session = editSession;
+		if (!session) return;
+		const item = queue.get(session.selectedId);
+		if (!item || inFlightIds.has(item.id)) return;
+		if (session.moveRow(queue, item.id, direction)) renderQueue(ctx);
+	};
+
+	const timelineItems = (): TimelineItem[] => buildTimelineItems(queue, editSession, queueModes());
+
+	/** Actual queue snapshot for the Atelier sidebar panel (piastra:queue). */
+	const queueSidebar = createQueueSidebar(pi.events, () => ({
+		pending: queue.length,
+		paused,
+		blocked: blockingActivity !== undefined,
+		blockedNote: blockingActivity,
+		rows: queue.snapshot().map((item) => ({
+			lane: item.lane,
+			text: compactText(item),
+			paused: item.paused ?? false,
+			head: item.id === queue.peek()?.id,
+		})),
+	}));
+
+	// Publish the queue snapshot on every render (the choke point all queue,
+	// pause, and blocking-activity mutations funnel through). Mirrored on
+	// globalThis for synchronous reads, emitted on pi.events on change only.
+	let lastBroadcastKey = "";
+	const broadcastQueueState = (): void => {
+		const state: QueueSteerState = {
+			pending: queue.length,
+			paused,
+			blocked: blockingActivity !== undefined,
+		};
+		globalThis.__tmustierPiQueueSteerState = state;
+		globalThis.__piastraPiQueueState = state;
+		queueSidebar.publish();
+		const key = `${state.pending}:${state.paused}:${state.blocked}`;
+		if (key === lastBroadcastKey) return;
+		lastBroadcastKey = key;
+		pi.events.emit(QUEUE_STEER_STATE_EVENT, state);
+		pi.events.emit(QUEUE_STEER_STATE_EVENT_ALIAS, state);
+	};
+	broadcastQueueState();
+
+	const renderQueue = (ctx: ExtensionContext): void => {
+		activeContext = ctx;
+		if (queue.length === 0) resumeQueue();
+		broadcastQueueState();
+		if (ctx.mode !== "tui" || queue.length === 0) {
+			ctx.ui.setWidget(WIDGET_ID, undefined);
+			return;
+		}
+
+		const items = timelineItems();
+		ctx.ui.setWidget(
+			WIDGET_ID,
+			(_tui, theme) => new QueueTimelineWidget({
+				items,
+				editingId: editSession?.selectedId,
+				renderInlineEditor,
+				paused,
+				idle: ctx.isIdle(),
+				awaitNote: blockingActivity === "fabric-await" ? fabricAwaitNote : undefined,
+				modes: queueModes(),
+				theme,
+			}),
+		);
+	};
+
+	// The newest custom entry is authoritative on resume. Any committed
+	// consumption must therefore record the remaining rows immediately; an
+	// empty queue needs an explicit tombstone because ordinary snapshots skip it.
+	const persistCommittedQueue = (ctx: ExtensionContext): void => {
+		try {
+			if (queue.length > 0) persistQueueSnapshot(pi, queue.snapshot(), paused);
+			else persistQueueTombstone(pi);
+		} catch (error) {
+			ctx.ui.notify(
+				`Could not persist updated queue state: ${error instanceof Error ? error.message : String(error)}`,
+				"error",
+			);
+		}
+	};
+
+	// Message rows only; dispatchLaneAtBoundary executes a steered head command
+	// row itself, and follow-up command rows wait for agent_settled. A command
+	// row stops the batch (FIFO): rows behind it dispatch after the control.
+	// Read-only: rows stay in the queue until each ack accepts them, so a failed
+	// delivery cannot lose, duplicate or reorder them.
+	const selectLaneBatch = (lane: QueueLane): QueuedMessage<ImageContent>[] => {
+		const head = queue.peek();
+		if (paused || blockingActivity || dispatchInFlight || !head || head.lane !== lane || laneIsHeld(lane)) {
+			return [];
+		}
+		const dispatchable = (item: QueuedMessage<ImageContent>): boolean => !itemCommand(item) && !item.paused;
+		const batch = headDeliveryBatch(queue.snapshot());
+		if (queueModes()[lane] === "all") return batch.filter(dispatchable);
+		return dispatchable(head) ? [head] : [];
+	};
+
+	/**
+	 * Persist the current committed rows before a delivery attempt. Because the
+	 * rows stay in the queue until Pi actually accepts them, a crash or shutdown
+	 * during preflight still recovers every not-yet-acknowledged row.
+	 */
+	const persistDispatchSnapshot = (ctx: ExtensionContext): boolean => {
+		try {
+			persistQueueSnapshot(pi, queue.snapshot(), paused);
+			return true;
+		} catch (error) {
+			ctx.ui.notify(
+				`Could not persist queued rows before delivery: ${error instanceof Error ? error.message : String(error)}`,
+				"error",
+			);
+			return false;
+		}
+	};
+
+	/**
+	 * A rejected or failed delivery keeps every not-yet-acknowledged row in place
+	 * (same ids, text, images and order) and parks the timeline so no later
+	 * boundary can retry it implicitly.
+	 */
+	const pauseAfterSendFailure = (
+		ctx: ExtensionContext,
+		lane: QueueLane,
+		item: QueuedMessage<ImageContent>,
+		error: unknown,
+	): void => {
+		pauseQueue();
+		persistDispatchSnapshot(ctx);
+		renderQueue(ctx);
+		const command = itemCommand(item);
+		const label = command ? commandLabel(command) : laneLabel(lane);
+		ctx.ui.notify(
+			`Could not deliver queued ${label}; queue paused: ${error instanceof Error ? error.message : String(error)}`,
+			"error",
+		);
+	};
+
+	const deliverBatchToNativeQueue = async (
+		ctx: ExtensionContext,
+		lane: QueueLane,
+		items: QueuedMessage<ImageContent>[],
+	): Promise<boolean> => {
+		if (items.length === 0) return false;
+		let prepared: QueuedMessage<ImageContent>[];
+		try {
+			const commands = pi.getCommands();
+			prepared = items.map((item) => ({ ...item, text: expandQueuedInput(item.text, commands) }));
+		} catch (error) {
+			// The rows never left the queue, so preparation failure only parks them.
+			pauseAfterPreparationFailure(ctx, lane, error);
+			return false;
+		}
+		if (dispatchInFlight) {
+			renderQueue(ctx);
+			return false;
+		}
+		if (!persistDispatchSnapshot(ctx)) {
+			pauseQueue();
+			renderQueue(ctx);
+			return false;
+		}
+		dispatchInFlight = true;
+		for (const item of prepared) inFlightIds.add(item.id);
+		renderQueue(ctx);
+		const generation = lifecycleGeneration;
+		try {
+			for (const item of prepared) {
+				if (generation !== lifecycleGeneration) return false;
+				// A preflight can yield to /pause, abort, compaction or row edits.
+				// Accept the completed send, but never submit its unsent tail after
+				// a new hold or a change to the dispatchable timeline head.
+				const current = queue.peek();
+				if (paused || blockingActivity || current?.id !== item.id || current.paused || laneIsHeld(lane)) {
+					persistCommittedQueue(ctx);
+					return false;
+				}
+				try {
+					await sendUserMessageWithAck(pi, userContent(item), { deliverAs: lane });
+				} catch (error) {
+					if (generation !== lifecycleGeneration) return false;
+					pauseAfterSendFailure(ctx, lane, item, error);
+					return false;
+				}
+				if (generation !== lifecycleGeneration) return false;
+				queue.remove(item.id);
+				persistCommittedQueue(ctx);
+				renderQueue(ctx);
+			}
+			return true;
+		} finally {
+			for (const item of prepared) inFlightIds.delete(item.id);
+			if (generation === lifecycleGeneration) dispatchInFlight = false;
+		}
+	};
+
+	const dispatchLaneAtBoundary = async (ctx: ExtensionContext, lane: QueueLane): Promise<boolean> => {
+		activeContext = ctx;
+		if (dispatchInFlight) {
+			renderQueue(ctx);
+			return false;
+		}
+		// Lane timing is uniform for message and command rows: a steered row
+		// dispatches at the next turn boundary, so a steered command executes
+		// mid-run exactly as if typed there. Follow-up command rows keep their
+		// settle boundary and run from dispatchFromIdle.
+		const head = queue.peek();
+		if (head?.lane !== lane) {
+			renderQueue(ctx);
+			return false;
+		}
+		if (lane === "steer" && itemCommand(head)) {
+			if (paused || blockingActivity || head.paused || laneIsHeld(lane)) {
+				renderQueue(ctx);
+				return false;
+			}
+			return executeCommandRow(ctx, lane);
+		}
+		const items = selectLaneBatch(lane);
+		if (items.length === 0) {
+			renderQueue(ctx);
+			return false;
+		}
+		return deliverBatchToNativeQueue(ctx, lane, items);
+	};
+
+	const pauseControlCommand = (
+		ctx: ExtensionContext,
+		item: QueuedMessage<ImageContent>,
+		activity: "new" | "model" | "thinking" | "fabric-prewalk" | "fabric-await",
+		error: unknown,
+	): void => {
+		if (blockingActivity !== activity || !queue.get(item.id)) return;
+		blockingActivity = undefined;
+		if (activity === "fabric-await") {
+			fabricAwaitAbort = undefined;
+			fabricAwaitNote = "";
+		}
+		if (activity === "new") {
+			pendingNewRowId = undefined;
+			plannedNewSession = false;
+		}
+		pauseQueue();
+		if (activity === "new") persistCommittedQueue(ctx);
+		renderQueue(ctx);
+		const command = itemCommand(item);
+		ctx.ui.notify(
+			`Could not run queued ${command ? commandLabel(command) : item.text.trim()}; queue paused: ${error instanceof Error ? error.message : String(error)}`,
+			"error",
+		);
+	};
+
+	const finishControlCommand = (
+		ctx: ExtensionContext,
+		item: QueuedMessage<ImageContent>,
+		activity: "model" | "thinking" | "fabric-prewalk" | "fabric-await",
+	): void => {
+		if (blockingActivity !== activity || !queue.get(item.id)) return;
+		if (activity === "fabric-await") {
+			fabricAwaitAbort = undefined;
+			fabricAwaitNote = "";
+		}
+		queue.remove(item.id);
+		blockingActivity = undefined;
+		resumeQueue();
+		persistCommittedQueue(ctx);
+		renderQueue(ctx);
+		if (!editSession && queue.length > 0 && ctx.isIdle()) dispatchFromIdle(ctx);
+	};
+
+	const executeModelRow = (ctx: ExtensionContext, item: QueuedMessage<ImageContent>, command: Extract<QueuedCommand, { kind: "model" }>): boolean => {
+		blockingActivity = "model";
+		renderQueue(ctx);
+		void (async () => {
+			try {
+				const models = availableModels(ctx);
+				let model = command.target ? exactModel(command.target, models) : undefined;
+				if (!model) {
+					const choices = modelChoices(command.target, models);
+					if (choices.length === 0) {
+						throw new Error(command.target
+							? `No available model matches ${command.target}`
+							: "No models are available");
+					}
+					if (!ctx.hasUI) throw new Error("Model selection requires an interactive Pi session");
+					const selected = await ctx.ui.select(
+						command.target ? `Queued /model · ${command.target}` : "Queued /model",
+						choices,
+					);
+					if (!selected) throw new Error("model selection cancelled");
+					model = exactModel(selected, models);
+					if (!model) throw new Error(`Selected model is no longer available: ${selected}`);
+				}
+				if (!(await pi.setModel(model))) throw new Error(`No authentication for ${model.provider}/${model.id}`);
+				finishControlCommand(ctx, item, "model");
+			} catch (error) {
+				pauseControlCommand(ctx, item, "model", error);
+			}
+		})();
+		return true;
+	};
+
+	const executeThinkingRow = (ctx: ExtensionContext, item: QueuedMessage<ImageContent>, command: Extract<QueuedCommand, { kind: "thinking" }>): boolean => {
+		blockingActivity = "thinking";
+		renderQueue(ctx);
+		void (async () => {
+			try {
+				const requested = command.level?.trim().toLowerCase();
+				let level = requested
+					? THINKING_LEVELS.find((candidate) => candidate === requested)
+					: undefined;
+				if (requested && !level) {
+					throw new Error(`Unknown thinking level "${command.level}". Available levels: ${THINKING_LEVELS.join(", ")}`);
+				}
+				if (!level) {
+					if (!ctx.hasUI) throw new Error("Thinking level selection requires an interactive Pi session");
+					const selected = await ctx.ui.select("Queued /thinking", [...THINKING_LEVELS]);
+					if (!selected) throw new Error("thinking level selection cancelled");
+					level = selected as (typeof THINKING_LEVELS)[number];
+				}
+				pi.setThinkingLevel(level);
+				const effective = pi.getThinkingLevel();
+				ctx.ui.notify(
+					effective === level ? `Thinking level: ${level}` : `Thinking level: ${effective} (clamped from ${level})`,
+					"info",
+				);
+				finishControlCommand(ctx, item, "thinking");
+			} catch (error) {
+				pauseControlCommand(ctx, item, "thinking", error);
+			}
+		})();
+		return true;
+	};
+
+	const executeFabricPrewalkRow = (ctx: ExtensionContext, item: QueuedMessage<ImageContent>): boolean => {
+		blockingActivity = "fabric-prewalk";
+		renderQueue(ctx);
+		const result = requestFabricPrewalk(pi, ctx);
+		if (!result) {
+			pauseControlCommand(
+				ctx,
+				item,
+				"fabric-prewalk",
+				"no compatible Pi Fabric listener is installed (requires pi-fabric 0.62.7 or newer)",
+			);
+			return false;
+		}
+		void result.then((response) => {
+			if (response.ok) finishControlCommand(ctx, item, "fabric-prewalk");
+			else pauseControlCommand(ctx, item, "fabric-prewalk", response.error);
+		});
+		return true;
+	};
+
+	const executeFabricAwaitRow = (
+		ctx: ExtensionContext,
+		item: QueuedMessage<ImageContent>,
+		command: Extract<QueuedCommand, { kind: "fabric-await" }>,
+	): boolean => {
+		blockingActivity = "fabric-await";
+		fabricAwaitNote = command.peer ? `waiting for ${command.peer} to settle` : "waiting for peers to settle";
+		const controller = new AbortController();
+		fabricAwaitAbort = controller;
+		renderQueue(ctx);
+		const result = requestFabricPeerAwait(
+			pi,
+			ctx,
+			{ ...(command.peer ? { peer: command.peer } : {}), signal: controller.signal },
+			(progress) => {
+				if (blockingActivity !== "fabric-await") return;
+				fabricAwaitNote = progress.waiting.length === 0
+					? "peers settling"
+					: `waiting for ${progress.waiting.map((w) => `${w.label} (${w.status})`).join(", ")}`;
+				renderQueue(ctx);
+			},
+		);
+		if (!result) {
+			fabricAwaitAbort = undefined;
+			fabricAwaitNote = "";
+			pauseControlCommand(
+				ctx,
+				item,
+				"fabric-await",
+				"no compatible Pi Fabric listener is installed (requires pi-fabric 0.64.0 or newer)",
+			);
+			return false;
+		}
+		void result.then((response) => {
+			if (response.ok) finishControlCommand(ctx, item, "fabric-await");
+			else pauseControlCommand(ctx, item, "fabric-await", response.error);
+		});
+		return true;
+	};
+
+	// Execute a command at the global timeline head: at idle from
+	// dispatchFromIdle, or mid-run when an eligible steer reaches a boundary.
+	const executeCommandRow = (ctx: ExtensionContext, lane: QueueLane): boolean => {
+		const next = queue.peek();
+		if (!next || next.lane !== lane) return false;
+		const command = itemCommand(next);
+		if (!command) return false;
+		if (command.kind === "model") return executeModelRow(ctx, next, command);
+		if (command.kind === "thinking") return executeThinkingRow(ctx, next, command);
+		if (command.kind === "fabric-prewalk") return executeFabricPrewalkRow(ctx, next);
+		if (command.kind === "fabric-await") return executeFabricAwaitRow(ctx, next, command);
+		if (command.kind === "new") {
+			// Preserve the command and its trailing rows before deferred dispatch,
+			// just as for ordinary prompt preflight.
+			if (!persistDispatchSnapshot(ctx)) {
+				pauseQueue();
+				renderQueue(ctx);
+				return false;
+			}
+			blockingActivity = "new";
+			pendingNewRowId = next.id;
+			plannedNewSession = false;
+			resumeQueue();
+			renderQueue(ctx);
+			commandSubmitTimer = setTimeout(() => {
+				commandSubmitTimer = undefined;
+				const generation = lifecycleGeneration;
+				void sendUserMessageWithAck(pi, `/${INTERNAL_NEW_COMMAND}`, { expandPromptTemplates: true }).catch((error) => {
+					if (generation !== lifecycleGeneration) return;
+					pauseControlCommand(ctx, next, "new", error);
+				});
+			}, 0);
+			return true;
+		}
+
+		const submit = tuiSubmit;
+		if (command.kind === "reload" && !submit) {
+			pauseQueue();
+			renderQueue(ctx);
+			ctx.ui.notify("Could not run queued /reload; queue paused because no interactive submit handler is available", "error");
+			return false;
+		}
+		queue.shift();
+		resumeQueue();
+		renderQueue(ctx);
+		if (command.kind === "compact") {
+			if (startCompaction(ctx, command.instructions)) {
+				persistCommittedQueue(ctx);
+				return true;
+			}
+			queue.prepend(next);
+			pauseQueue();
+			renderQueue(ctx);
+			return false;
+		}
+		blockingActivity = "reload";
+		persistCommittedQueue(ctx);
+		// Defer so the extension runtime is never torn down from inside this handler.
+		commandSubmitTimer = setTimeout(() => {
+			commandSubmitTimer = undefined;
+			submit?.("/reload");
+		}, 0);
+		return true;
+	};
+
+	const sendHeadMessage = (ctx: ExtensionContext, lane: QueueLane, deliverAs?: QueueLane): boolean => {
+		const head = queue.peek();
+		if (!head || head.lane !== lane) return false;
+		let prepared: QueuedMessage<ImageContent>;
+		try {
+			prepared = { ...head, text: expandQueuedInput(head.text, pi.getCommands()) };
+		} catch (error) {
+			pauseAfterPreparationFailure(ctx, lane, error);
+			return false;
+		}
+		if (dispatchInFlight) {
+			renderQueue(ctx);
+			return false;
+		}
+		resumeQueue();
+		// Keep the row until Pi confirms preflight acceptance; persist the attempt
+		// first so a crash/shutdown mid-preflight still recovers it.
+		if (!persistDispatchSnapshot(ctx)) {
+			pauseQueue();
+			renderQueue(ctx);
+			return false;
+		}
+		dispatchInFlight = true;
+		inFlightIds.add(prepared.id);
+		renderQueue(ctx);
+		const generation = lifecycleGeneration;
+		const options: AckSendOptions | undefined = deliverAs ? { deliverAs } : undefined;
+		void sendUserMessageWithAck(pi, userContent(prepared), options).then(
+			() => {
+				if (generation !== lifecycleGeneration) return;
+				inFlightIds.delete(prepared.id);
+				queue.remove(prepared.id);
+				persistCommittedQueue(ctx);
+				renderQueue(ctx);
+			},
+			(error) => {
+				if (generation !== lifecycleGeneration) return;
+				inFlightIds.delete(prepared.id);
+				pauseAfterSendFailure(ctx, lane, prepared, error);
+			},
+		).finally(() => {
+			if (generation === lifecycleGeneration) dispatchInFlight = false;
+		});
+		return true;
+	};
+
+	function dispatchFromIdle(ctx: ExtensionContext): boolean {
+		activeContext = ctx;
+		if (blockingActivity) {
+			renderQueue(ctx);
+			return false;
+		}
+		if (dispatchInFlight) {
+			renderQueue(ctx);
+			return false;
+		}
+		const lane = queue.peek()?.lane;
+		if (!lane || laneIsHeld(lane)) {
+			renderQueue(ctx);
+			return false;
+		}
+		const head = queue.peek();
+		// A paused head row holds dispatch here; nothing behind it jumps ahead.
+		if (head?.paused) {
+			renderQueue(ctx);
+			return false;
+		}
+		if (head && itemCommand(head)) return executeCommandRow(ctx, lane);
+		return sendHeadMessage(ctx, lane);
+	}
+
+	const armNativeFlushGrace = (ctx: ExtensionContext, activity: "compact" | "auto-compact"): void => {
+		if (nativeFlushGraceTimer) return;
+		const epoch = compactionEpoch;
+		nativeFlushGraceTimer = setTimeout(() => {
+			nativeFlushGraceTimer = undefined;
+			if (epoch !== compactionEpoch) return;
+			if (!isCompacting() || !nativeCompactionInputQueued || nativeCompactionTurnStarted) return;
+			// The flushed run never started, so no settle can conclude the
+			// activity on its own; give up on the vanished input and finish.
+			nativeCompactionInputQueued = false;
+			nativeCompactionTurnStarted = false;
+			deferCompactionFinish(activeContext ?? ctx, activity);
+		}, NATIVE_FLUSH_GRACE_MS);
+	};
+
+	const cancelNativeFlushGrace = (): void => {
+		if (nativeFlushGraceTimer === undefined) return;
+		clearTimeout(nativeFlushGraceTimer);
+		nativeFlushGraceTimer = undefined;
+	};
+
+	const deferCompactionFinish = (
+		ctx: ExtensionContext,
+		activity: "compact" | "auto-compact",
+	): void => {
+		compactionFinishTimer = setTimeout(() => {
+			compactionFinishTimer = undefined;
+			if (blockingActivity !== activity) return;
+			// Pi flushes ordinary TUI submissions after compaction without
+			// awaiting prompt preflight. Keep command rows behind that native run.
+			if (nativeCompactionInputQueued) {
+				armNativeFlushGrace(activeContext ?? ctx, activity);
+				renderQueue(activeContext ?? ctx);
+				return;
+			}
+			cancelNativeFlushGrace();
+			blockingActivity = undefined;
+			nativeCompactionInputQueued = false;
+			nativeCompactionTurnStarted = false;
+			// A concluded overflow-recovery compaction closes the failed run's
+			// recovery window without a healthy agent_end ever arriving; release
+			// the error hold unless that recovery itself failed.
+			if (canRecoverCompaction(errorHold, compactionIsOverflowRecovery, compactionRecoveryFailed)) resumeQueue();
+			compactionRecoveryFailed = false;
+			compactionIsOverflowRecovery = false;
+			const current = activeContext ?? ctx;
+			renderQueue(current);
+			if (!paused && !editSession && queue.length > 0 && current.isIdle()) dispatchFromIdle(current);
+		}, 0);
+	};
+
+	const startCompaction = (ctx: ExtensionContext, instructions: string | undefined): boolean => {
+		blockingActivity = "compact";
+		broadcastQueueState();
+		compactionEpoch += 1;
+		cancelNativeFlushGrace();
+		nativeCompactionInputQueued = false;
+		nativeCompactionTurnStarted = false;
+		try {
+			ctx.compact({
+				customInstructions: instructions,
+				onComplete: () => {
+					extensionCompactionInFlight = false;
+					if (!nativeCompactionInputQueued) deferCompactionFinish(ctx, "compact");
+				},
+				onError: () => {
+					extensionCompactionInFlight = false;
+					if (!nativeCompactionInputQueued) deferCompactionFinish(ctx, "compact");
+				},
+			});
+			// Pi settles the run this compaction aborted before the compaction
+			// itself runs; that settle must not conclude the activity, so only
+			// the completion callbacks above may finish it from here on.
+			extensionCompactionInFlight = true;
+			return true;
+		} catch (error) {
+			blockingActivity = undefined;
+			broadcastQueueState();
+			ctx.ui.notify(
+				`Could not start compaction: ${error instanceof Error ? error.message : String(error)}`,
+				"error",
+			);
+			return false;
+		}
+	};
+
+	const deferCommand = (ctx: ExtensionContext, text: string): void => {
+		queue.enqueue("followUp", text);
+		resumeQueue();
+		renderQueue(ctx);
+	};
+
+	const sendFollowUpNow = (ctx: ExtensionContext): boolean => {
+		const head = queue.peek();
+		if (!head || head.lane !== "followUp") return false;
+		if (head.paused) {
+			ctx.ui.notify(`The next follow-up row is paused (${PAUSE_ROW_KEY} on it resumes delivery)`, "info");
+			return false;
+		}
+		const headCommand = itemCommand(head);
+		if (headCommand) {
+			if (blockingActivity || !ctx.isIdle()) {
+				ctx.ui.notify(`Queued ${commandLabel(headCommand)} runs when the agent is idle`, "info");
+				return false;
+			}
+			return executeCommandRow(ctx, "followUp");
+		}
+		return sendHeadMessage(ctx, "followUp", ctx.isIdle() ? undefined : "steer");
+	};
+
+	/**
+	 * Explicit flush: compose every queued message row into one message in
+	 * timeline order and send it at once — as native steering during a run, or
+	 * as the prompt that starts the run from idle. Command rows are not
+	 * messages: they stay queued and run at their lane's dispatch boundary.
+	 */
+	const drainAll = (ctx: ExtensionContext): void => {
+		activeContext = ctx;
+		if (editSession) {
+			ctx.ui.notify("Finish or cancel row editing before draining the queue", "info");
+			return;
+		}
+		if (blockingActivity) {
+			ctx.ui.notify("The queue drains after the current control command finishes", "info");
+			return;
+		}
+		if (dispatchInFlight) {
+			ctx.ui.notify("A queued message is already being delivered; drain again once it settles", "info");
+			return;
+		}
+		// Paused rows are deliberate holds: a drain skips them and leaves them parked.
+		const original = queue.snapshot();
+		const heldBack = original.filter((item) => item.paused && !itemCommand(item)).length;
+		const messages = original.filter((item) => !itemCommand(item) && !item.paused && !inFlightIds.has(item.id));
+		if (messages.length === 0) {
+			ctx.ui.notify(
+				queue.length === 0
+					? "Queue is empty"
+					: heldBack > 0
+						? `No dispatchable queued messages; ${heldBack} paused row${heldBack === 1 ? " stays" : "s stay"} parked`
+						: "No queued messages to drain; command rows still run when the agent is idle",
+				"info",
+			);
+			return;
+		}
+		let prepared: QueuedMessage<ImageContent>[];
+		try {
+			const commands = pi.getCommands();
+			prepared = messages.map((item) => ({ ...item, text: expandQueuedInput(item.text, commands) }));
+		} catch (error) {
+			pauseQueue();
+			renderQueue(ctx);
+			ctx.ui.notify(
+				`Could not prepare queued messages; queue paused: ${error instanceof Error ? error.message : String(error)}`,
+				"error",
+			);
+			return;
+		}
+		// Rows stay queued until Pi acknowledges the merged prompt; rows the drain
+		// skips (paused or command) are never touched.
+		const drainedIds = new Set(messages.map((item) => item.id));
+		const keptPaused = original.filter((item) => !drainedIds.has(item.id) && item.paused && !itemCommand(item)).length;
+		const keptCommands = original.filter((item) => !drainedIds.has(item.id) && itemCommand(item)).length;
+		const keptNotes: string[] = [];
+		if (keptCommands > 0) {
+			keptNotes.push(`${keptCommands} command row${keptCommands === 1 ? " stays" : "s stay"} queued`);
+		}
+		if (keptPaused > 0) {
+			keptNotes.push(`${keptPaused} paused row${keptPaused === 1 ? " stays" : "s stay"} parked`);
+		}
+		const commandNote = keptNotes.length > 0 ? `; ${keptNotes.join("; ")}` : "";
+		resumeQueue();
+		if (!persistDispatchSnapshot(ctx)) {
+			pauseQueue();
+			renderQueue(ctx);
+			return;
+		}
+		dispatchInFlight = true;
+		for (const message of prepared) inFlightIds.add(message.id);
+		renderQueue(ctx);
+		const generation = lifecycleGeneration;
+		const idle = ctx.isIdle();
+		void sendUserMessageWithAck(pi, mergedDrainContent(prepared), idle ? undefined : { deliverAs: "steer" }).then(
+			() => {
+				if (generation !== lifecycleGeneration) return;
+				for (const message of prepared) queue.remove(message.id);
+				persistCommittedQueue(ctx);
+				renderQueue(ctx);
+				ctx.ui.notify(
+					idle
+						? `Drained ${prepared.length} queued message${prepared.length === 1 ? "" : "s"} into one message${commandNote}`
+						: `Drained ${prepared.length} queued message${prepared.length === 1 ? "" : "s"} into one steering message${commandNote}`,
+					"info",
+				);
+			},
+			(error) => {
+				if (generation !== lifecycleGeneration) return;
+				pauseQueue();
+				persistDispatchSnapshot(ctx);
+				renderQueue(ctx);
+				ctx.ui.notify(
+					`Could not drain the queue; queue paused and every row kept: ${error instanceof Error ? error.message : String(error)}`,
+					"error",
+				);
+			},
+		).finally(() => {
+			for (const message of prepared) inFlightIds.delete(message.id);
+			if (generation === lifecycleGeneration) dispatchInFlight = false;
+		});
+	};
+
+	/**
+	 * Re-apply the pre-commit identity of rows awaiting a delivery ack. A save
+	 * must not edit or delete a row that is mid-delivery; rows enqueued during
+	 * dispatch keep their current positions.
+	 */
+	const restoreProtectedRows = (before: readonly QueuedMessage<ImageContent>[]): void => {
+		const protectedBefore = before.filter((item) => inFlightIds.has(item.id));
+		if (protectedBefore.length === 0) return;
+		const currentById = new Map(queue.snapshot().map((item) => [item.id, item]));
+		for (const row of protectedBefore) {
+			if (!currentById.has(row.id)) continue;
+			queue.update(row.id, row.text, row.images);
+			queue.setLane(row.id, row.lane);
+			queue.setPaused(row.id, row.paused ?? false);
+		}
+		const missing = protectedBefore.filter((row) => !currentById.has(row.id));
+		if (missing.length === 0) return;
+		const missingById = new Map(missing.map((item) => [item.id, item]));
+		const currentRows = queue.snapshot();
+		const rebuilt: QueuedMessage<ImageContent>[] = [];
+		const emitted = new Set<string>();
+		for (const row of before) {
+			const replacement = inFlightIds.has(row.id) && missingById.has(row.id)
+				? missingById.get(row.id)
+				: currentById.get(row.id);
+			if (replacement && !emitted.has(replacement.id)) {
+				rebuilt.push(replacement);
+				emitted.add(replacement.id);
+			}
+		}
+		for (const row of currentRows) {
+			if (emitted.has(row.id)) continue;
+			rebuilt.push(row);
+			emitted.add(row.id);
+		}
+		queue.restore(rebuilt);
+	};
+
+	const finishEditing = (
+		ctx: ExtensionContext,
+		save: boolean,
+		text = ctx.ui.getEditorText(),
+		images?: readonly ImageContent[],
+	): void => {
+		const session = editSession;
+		if (!session) return;
+		if (!save) session.rollbackPositions(queue);
+		const protectedBefore = queue.snapshot();
+		const result = save ? session.commit(queue, text, images) : undefined;
+		if (save) restoreProtectedRows(protectedBefore);
+
+		editSession = undefined;
+		ctx.ui.setEditorText(session.composerDraft);
+		if (result?.removed) {
+			ctx.ui.notify(`Removed ${result.removed} queued message${result.removed === 1 ? "" : "s"}`, "info");
+		}
+		if (result?.moved) {
+			ctx.ui.notify(`Changed delivery depth for ${result.moved} queued row${result.moved === 1 ? "" : "s"}`, "info");
+		}
+		if (result?.held) {
+			ctx.ui.notify(`Paused ${result.held} queued row${result.held === 1 ? "" : "s"} — dispatch stops there until resumed`, "info");
+		}
+		if (result?.released) {
+			ctx.ui.notify(`Resumed ${result.released} queued row${result.released === 1 ? "" : "s"}`, "info");
+		}
+		if (result && (result.updated || result.removed || result.moved || result.held || result.released)) {
+			// Save committed edits now so a crash cannot revive an older row shape.
+			persistCommittedQueue(ctx);
+		}
+		renderQueue(ctx);
+
+		// A pinned head may have let the agent settle while it was edited.
+		if (ctx.isIdle() && !paused && !blockingActivity) dispatchFromIdle(ctx);
+	};
+
+	const selectQueueItem = (ctx: ExtensionContext, direction: "previous" | "next"): void => {
+		activeContext = ctx;
+		if (queue.length === 0) {
+			ctx.ui.notify("No queued messages to edit", "info");
+			return;
+		}
+
+		if (!editSession) {
+			const composerDraft = ctx.ui.getEditorText();
+			const selectedId = queue.mostRecentId();
+			const selected = selectedId ? queue.get(selectedId) : undefined;
+			if (!selected) return;
+			if (inFlightIds.has(selected.id)) {
+				ctx.ui.notify("That queued row is already being delivered; wait for it to settle", "warning");
+				return;
+			}
+			editSession = new QueueEditSession(selected, composerDraft);
+			ctx.ui.setEditorText(selected.text);
+			renderQueue(ctx);
+			return;
+		}
+
+		// Navigate the visible outline, including unsaved depth and position edits.
+		// Rows mid-delivery are not editable, so they are not navigation targets.
+		const session = editSession;
+		const ordered = timelineItems().filter((item) => !inFlightIds.has(item.id));
+		if (ordered.length === 0) {
+			renderQueue(ctx);
+			return;
+		}
+		const currentText = ctx.ui.getEditorText();
+		const index = ordered.findIndex((item) => item.id === session.selectedId);
+		const selectedId = direction === "previous"
+			? index <= 0
+				? ordered.at(-1)?.id
+				: ordered[index - 1]?.id
+			: index === -1 || index === ordered.length - 1
+				? ordered[0]?.id
+				: ordered[index + 1]?.id;
+		const selected = selectedId ? queue.get(selectedId) : undefined;
+		if (!selected) return;
+		const selectedText = session.select(selected, currentText);
+		ctx.ui.setEditorText(selectedText);
+		renderQueue(ctx);
+	};
+
+	const installEditor = (ctx: ExtensionContext): void => {
+		if (ctx.mode !== "tui") return;
+
+		const previousFactory = ctx.ui.getEditorComponent();
+		const features = editorFeatures(previousFactory);
+		if (features.has(QUEUE_STEER_FEATURE)) return;
+
+		const factory = ((tui, theme, keybindings) => {
+			const editor = previousFactory?.(tui, theme, keybindings) ?? new CustomEditor(tui, theme, keybindings);
+			installSubmitGuard(editor, ctx);
+			const handleInput = editor.handleInput.bind(editor);
+			const renderEditor = editor.render.bind(editor);
+			const isShowingAutocomplete = (): boolean => {
+				const candidate = editor as typeof editor & { isShowingAutocomplete?: () => boolean };
+				return candidate.isShowingAutocomplete?.() ?? false;
+			};
+
+			renderInlineEditor = (width: number): string[] => {
+				renderingInline = true;
+				try {
+					const candidate = editor as typeof editor & { getPaddingX?: () => number };
+					const paddingX = candidate.getPaddingX?.() ?? 0;
+					return extractInlineEditorLines(renderEditor(width), paddingX);
+				} finally {
+					renderingInline = false;
+				}
+			};
+
+			editor.render = (width: number): string[] => {
+				if (editSession && !renderingInline) return [];
+				return renderEditor(width);
+			};
+
+			editor.handleInput = (data: string): void => {
+				if (editSession) {
+					if (keybindings.matches(data, "app.message.dequeue")) {
+						selectQueueItem(ctx, "previous");
+						return;
+					}
+					if (nextRowKeys().some((key) => matchesKey(data, key))) {
+						selectQueueItem(ctx, "next");
+						return;
+					}
+					if (matchesKey(data, REMOVE_ROW_KEY)) {
+						editSession.toggleRemoved(editSession.selectedId);
+						renderQueue(ctx);
+						return;
+					}
+					if (matchesOptionArrow(data, "left")) {
+						editSession.setLane(editSession.selectedId, "followUp");
+						renderQueue(ctx);
+						return;
+					}
+					if (matchesOptionArrow(data, "right")) {
+						editSession.setLane(editSession.selectedId, "steer");
+						renderQueue(ctx);
+						return;
+					}
+					if (matchesKey(data, TOGGLE_LANE_KEY)) {
+						editSession.toggleLane(editSession.selectedId);
+						renderQueue(ctx);
+						return;
+					}
+					if (matchesKey(data, PAUSE_ROW_KEY)) {
+						// A removed row is deleted on save, so its dispatch hold is
+						// meaningless; keep the removal mark and ignore the toggle.
+						if (!editSession.isRemoved(editSession.selectedId)) {
+							editSession.togglePaused(editSession.selectedId);
+						}
+						renderQueue(ctx);
+						return;
+					}
+					if (matchesKey(data, REORDER_UP_KEY) || matchesKey(data, REORDER_DOWN_KEY)) {
+						reorderSelectedRow(ctx, matchesKey(data, REORDER_UP_KEY) ? -1 : 1);
+						return;
+					}
+					if (keybindings.matches(data, "app.interrupt") && !isShowingAutocomplete()) {
+						finishEditing(ctx, false);
+						return;
+					}
+					if (keybindings.matches(data, "app.message.followUp")) {
+						finishEditing(ctx, true);
+						return;
+					}
+					if (keybindings.matches(data, "tui.input.submit") && !isShowingAutocomplete()) {
+						finishEditing(ctx, true);
+						return;
+					}
+				}
+
+				if (matchesKey(data, AWAIT_PEERS_KEY)) {
+					if (editSession) {
+						ctx.ui.notify("Finish editing rows before changing the peer gate", "warning");
+					} else {
+						void armPeerGate(ctx);
+					}
+					return;
+				}
+				if (
+					blockingActivity === "fabric-await"
+					&& keybindings.matches(data, "app.interrupt")
+					&& !isShowingAutocomplete()
+				) {
+					// Explicitly abandon the peer wait; the gate row pauses in place.
+					fabricAwaitAbort?.abort();
+					return;
+				}
+				if (keybindings.matches(data, "app.message.followUp")) {
+					const text = (editor.getExpandedText?.() ?? editor.getText()).trim();
+					if (isCompacting() && parseQueuedCommand(text)) {
+						deferCommand(ctx, text);
+						editor.addToHistory?.(text);
+						editor.setText("");
+						return;
+					}
+					if (
+						ctx.isIdle()
+						&& (
+							isQueueableSubmission(text)
+							|| isExpandableSlashCommand(text, pi.getCommands())
+							|| queuesWhileStopped(parseQueuedCommand(text))
+						)
+					) {
+						// While the agent is stopped, Option+Enter parks the submission in
+						// the follow-up lane, paused; plain Enter keeps Pi's immediate
+						// send. Skills, templates and every recognised control command park
+						// the same way; other built-ins, extension commands, unknown slash
+						// input and bash still act immediately. Pending paste images
+						// are not readable here, matching upstream's native-capture fidelity.
+						queue.enqueue("followUp", text, []);
+						pauseQueue();
+						editor.addToHistory?.(text);
+						editor.setText("");
+						renderQueue(ctx);
+						return;
+					}
+					trackNativeCompactionSubmission(text, "followUp");
+				}
+
+				if (queue.length > 0 && keybindings.matches(data, "app.message.dequeue")) {
+					selectQueueItem(ctx, "previous");
+					return;
+				}
+				if (
+					queue.length > 0 &&
+					!ctx.isIdle() &&
+					keybindings.matches(data, "app.interrupt") &&
+					!isShowingAutocomplete()
+				) {
+					pauseQueue();
+					ctx.abort();
+					renderQueue(ctx);
+					return;
+				}
+				if (
+					queue.length > 0 &&
+					!editor.getText().trim() &&
+					keybindings.matches(data, "tui.input.submit")
+				) {
+					if (isCompacting()) {
+						ctx.ui.notify("Queued messages will run after compaction finishes", "info");
+						return;
+					}
+					if (paused) {
+						resumeQueue();
+						if (ctx.isIdle()) {
+							if (dispatchFromIdle(ctx)) return;
+							const nextLane = queue.peek()?.lane;
+							const head = queue.peek();
+							if (head?.paused && nextLane) {
+								renderQueue(ctx);
+								ctx.ui.notify(`Queue resumed — the next ${laneLabel(nextLane)} row is paused (${PAUSE_ROW_KEY} on it resumes)`, "info");
+								return;
+							}
+						}
+						renderQueue(ctx);
+						return;
+					}
+					if (queue.peek()?.lane === "followUp") {
+						sendFollowUpNow(ctx);
+						return;
+					}
+				}
+				handleInput(data);
+			};
+			return editor;
+		}) as ComposedEditorFactory;
+		factory[EDITOR_FEATURES] = new Set([...features, QUEUE_STEER_FEATURE]);
+		// Preserve the factory from before this runtime's first wrapper. A later
+		// unmarked composer may itself close over our wrapper; restoring that on
+		// reload would carry stale submit guards into the replacement runtime.
+		if (!baseEditorFactoryCaptured) {
+			baseEditorFactory = previousFactory;
+			baseEditorFactoryCaptured = true;
+		}
+		ctx.ui.setEditorComponent(factory);
+		renderQueue(ctx);
+	};
+
+		/**
+	 * Option+W: toggle a /fabric await gate row. With no gate queued, fetch live
+	 * peer cards and enqueue one (targeted when peers exist); with a gate queued,
+	 * remove it. Enqueueing a gate unparks dispatch: rows ahead flush normally and
+	 * the gate holds the tail until the selected peers settle.
+	 */
+	const armPeerGate = async (ctx: ExtensionContext): Promise<void> => {
+		if (blockingActivity === "fabric-await") {
+			ctx.ui.notify("A peer settle gate is already running; Escape cancels it", "warning");
+			return;
+		}
+		const gates = queue.snapshot().filter(
+			(item) => parseQueuedCommand(item.text)?.kind === "fabric-await",
+		);
+		if (gates.length > 0) {
+			for (const gate of gates) queue.remove(gate.id);
+			persistCommittedQueue(ctx);
+			renderQueue(ctx);
+			ctx.ui.notify(
+				gates.length === 1 ? "Removed the peer settle gate" : `Removed ${gates.length} peer settle gates`,
+				"info",
+			);
+			return;
+		}
+		const request = requestFabricPeerCards(pi, ctx);
+		if (!request) {
+			ctx.ui.notify("Peer queuing requires pi-fabric 0.64.0 or newer", "error");
+			return;
+		}
+		const result = await request;
+		if (blockingActivity || editSession) {
+			renderQueue(ctx);
+			return;
+		}
+		if (!result.ok) {
+			ctx.ui.notify(`Could not list Fabric peers: ${result.error}`, "error");
+			return;
+		}
+		const cards = result.cards;
+		let label: string | undefined;
+		if (cards.length === 1) {
+			label = cards[0]!.label;
+		} else if (cards.length > 1) {
+			if (!ctx.hasUI) {
+				ctx.ui.notify("Multiple peers detected; picking one needs an interactive session", "warning");
+				return;
+			}
+			const allPeers = `All ${cards.length} peers (project quiet)`;
+			const options = [allPeers, ...cards.map(formatPeerCard)];
+			const selected = await ctx.ui.select("Hold the queue until these peers settle", options);
+			if (!selected) return;
+			if (selected !== allPeers) label = cards[options.indexOf(selected) - 1]?.label;
+		}
+		queue.enqueue("followUp", label ? `/fabric await ${label}` : "/fabric await");
+		resumeQueue();
+		renderQueue(ctx);
+		if (cards.length === 0) {
+			ctx.ui.notify("No live peers on this project mesh; the gate resolves immediately", "info");
+		}
+		if (ctx.isIdle() && !blockingActivity && !editSession) dispatchFromIdle(ctx);
+	};
+
+const installSubmitGuard = (editor: EditorComponent, ctx: ExtensionContext): void => {
+		const guarded = editor as EditorComponent & { [SUBMIT_GUARD]?: boolean };
+		if (guarded[SUBMIT_GUARD]) return;
+		guarded[SUBMIT_GUARD] = true;
+		let innerSubmit = editor.onSubmit;
+		if (innerSubmit) tuiSubmit = innerSubmit;
+		const wrappedSubmit = (text: string) => {
+			const command = parseQueuedCommand(text);
+			if (!editSession && command && isCompacting()) {
+				deferCommand(ctx, text);
+				editor.addToHistory?.(text);
+				editor.setText("");
+				return;
+			}
+			if (command?.kind === "compact" && !editSession) {
+				editor.addToHistory?.(text);
+				editor.setText("");
+				// Mid-run, park /compact as a steer row instead of cutting a live
+				// tool call: turn_end fires only after the turn's tool results
+				// land, so the row starts compaction at the next boundary. From
+				// idle there is nothing to wait for and it still starts instantly.
+				if (!ctx.isIdle()) {
+					queue.enqueue("steer", text, []);
+					resumeQueue();
+					renderQueue(ctx);
+					return;
+				}
+				startCompaction(ctx, command.instructions);
+				return;
+			}
+			if (command?.kind === "new" && !editSession && !ctx.isIdle()) {
+				// Same mid-run rule as /compact: replacing the session would cut
+				// live tool work, so park it as a steer row and hand off at the
+				// next turn boundary instead. Idle /new keeps Pi's instant path.
+				editor.addToHistory?.(text);
+				editor.setText("");
+				queue.enqueue("steer", text, []);
+				resumeQueue();
+				renderQueue(ctx);
+				return;
+			}
+			if (command?.kind === "reload" && !editSession && (blockingActivity === "reload" || !ctx.isIdle())) {
+				queue.enqueue("followUp", text, []);
+				resumeQueue();
+				renderQueue(ctx);
+				return;
+			}
+			if (!editSession) trackNativeCompactionSubmission(text);
+			innerSubmit?.(text);
+		};
+		Object.defineProperty(editor, "onSubmit", {
+			configurable: true,
+			enumerable: true,
+			get: () => wrappedSubmit,
+			set: (fn: ((text: string) => void) | undefined) => {
+				innerSubmit = fn;
+				if (fn) tuiSubmit = fn;
+			},
+		});
+	};
+
+	const scheduleEditorInstall = (ctx: ExtensionContext): void => {
+		if (editorInstallTimer) clearTimeout(editorInstallTimer);
+		editorInstallTimer = setTimeout(() => {
+			editorInstallTimer = undefined;
+			installEditor(ctx);
+		}, 0);
+	};
+
+	pi.registerCommand(INTERNAL_NEW_COMMAND, {
+		description: "Internal adapter for a queued /new session handoff",
+		handler: async (_args, commandContext: ExtensionCommandContext) => {
+			const rowId = pendingNewRowId;
+			const row = rowId ? queue.get(rowId) : undefined;
+			if (blockingActivity !== "new" || !row) {
+				commandContext.ui.notify("No queued /new handoff is pending", "warning");
+				return;
+			}
+			plannedNewSession = true;
+			try {
+				const result = await commandContext.newSession();
+				if (result.cancelled) {
+					pauseControlCommand(commandContext, row, "new", "new session cancelled");
+				}
+			} catch (error) {
+				pauseControlCommand(commandContext, row, "new", error);
+			}
+		},
+	});
+
+	const USAGE_Q = "Usage: /q <prompt> — appends a follow-up delivery row (idle queues stay paused like Alt+Enter)";
+	const USAGE_ST = "Usage: /st <prompt> — steers the current run's segment via the steer lane";
+
+	/**
+	 * /q <prompt>: append a follow-up row. Idle submissions park the queue
+	 * paused exactly like Alt+Enter on a stopped composer; a mid-run /q
+	 * follows the native follow-up behavior and dispatches at the run's tail.
+	 */
+	const handleQueueFollowUp = (args: string, ctx: ExtensionCommandContext): void => {
+		activeContext = ctx;
+		const text = args.trim();
+		if (!text) {
+			ctx.ui.notify(USAGE_Q, "warning");
+			return;
+		}
+		if (editSession) {
+			ctx.ui.notify("Finish or cancel row editing before queueing", "warning");
+			return;
+		}
+		const idle = ctx.isIdle();
+		queue.enqueue("followUp", text, []);
+		// An explicit enqueue supersedes any error hold standing behind it.
+		errorHold = false;
+		if (idle) pauseQueue();
+		else resumeQueue();
+		renderQueue(ctx);
+		ctx.ui.notify(
+			idle
+				? `Queued 1 follow-up row — delivery paused; ${keyText("tui.input.submit")} on the empty composer resumes it`
+				: `Queued 1 follow-up row for after this run`,
+			"info",
+		);
+	};
+
+	/**
+	 * /st <prompt>: steer the current run's segment. Idle with no backlog
+	 * starts the run immediately; with a backlog it joins the timeline
+	 * without overtaking the head, and a paused timeline stays paused.
+	 */
+	const handleQueueSteer = (args: string, ctx: ExtensionCommandContext): void => {
+		activeContext = ctx;
+		const text = args.trim();
+		if (!text) {
+			ctx.ui.notify(USAGE_ST, "warning");
+			return;
+		}
+		if (editSession) {
+			ctx.ui.notify("Finish or cancel row editing before queueing", "warning");
+			return;
+		}
+		if (ctx.isIdle()) {
+			if (queue.length === 0 && !blockingActivity) {
+				// Route the immediate send through the owned ack-aware dispatch so a
+				// rejected preflight retains the row and parks the timeline.
+				queue.enqueue("steer", text, []);
+				renderQueue(ctx);
+				if (dispatchFromIdle(ctx)) {
+					ctx.ui.notify("Submitting the steered run", "info");
+				} else {
+					ctx.ui.notify("Queued the steer row; it dispatches when the queue is free", "info");
+				}
+				return;
+			}
+			// Idle backlog: append in plain FIFO timeline order — enqueueSteer's
+			// current-run insertion is a mid-run concept and would overtake a
+			// parked follow-up head here.
+			queue.enqueue("steer", text, []);
+			renderQueue(ctx);
+			ctx.ui.notify(
+				`Queued a steer row behind ${queue.length - 1} row${queue.length - 1 === 1 ? "" : "s"} — it dispatches in timeline order without overtaking`,
+				"info",
+			);
+			// Never overtake: only the timeline head dispatches from idle.
+			if (!paused) dispatchFromIdle(ctx);
+			return;
+		}
+		queue.enqueueSteer(text, []);
+		resumeQueue();
+		renderQueue(ctx);
+	};
+
+	pi.registerCommand("q", {
+		description: "Queue a follow-up prompt: /q <prompt> (idle delivers paused, like Alt+Enter)",
+		handler: (args, ctx) => handleQueueFollowUp(args, ctx),
+	});
+
+	pi.registerCommand("st", {
+		description: "Steer the current run's segment: /st <prompt>",
+		handler: (args, ctx) => handleQueueSteer(args, ctx),
+	});
+
+	const drainHandler = async (_args: string, ctx: ExtensionCommandContext): Promise<void> => {
+		drainAll(ctx);
+	};
+
+	pi.registerCommand(DRAIN_COMMAND, {
+		description: "Drain every queued message into the run as steering, in timeline order",
+		handler: drainHandler,
+	});
+
+	pi.registerCommand(DRAIN_COMMAND_ALIAS, {
+		description: "Alias of /queue-drain: drain every queued message into the run as steering",
+		handler: drainHandler,
+	});
+
+	/**
+	 * /pause: graceful session-run pause. While tool calls are executing, hold
+	 * fire until every in-flight call finishes and stop at that tool boundary,
+	 * so pausing never kills a tool mid-execution the way an abrupt interrupt
+	 * does. With no tool in flight there is nothing to protect, so the run
+	 * stops immediately. A quiet agent simply parks the visible queue.
+	 */
+	pi.registerCommand(PAUSE_COMMAND, {
+		description: "Pause the run once in-flight tool calls finish, without killing tool work mid-execution",
+		handler: async (_args, ctx) => {
+			activeContext = ctx;
+			if (isCompacting()) {
+				ctx.ui.notify("Compaction is running; wait for it to finish before pausing", "warning");
+				return;
+			}
+			if (ctx.isIdle()) {
+				pauseQueue();
+				renderQueue(ctx);
+				ctx.ui.notify(
+					queue.length === 0
+						? "The agent is idle; nothing to pause"
+						: `Queue paused — ${keyText("tui.input.submit")} on the empty composer resumes it`,
+					"info",
+				);
+				return;
+			}
+			if (inFlightTools.size === 0) {
+				// No tool call is executing (mid-stream text or between turns), so
+				// stopping the LLM call right away kills nothing in flight.
+				pauseQueue();
+				ctx.abort();
+				renderQueue(ctx);
+				ctx.ui.notify(
+					queue.length === 0
+						? "Paused the run; no tool call was in flight"
+						: `Paused the run; queue held — ${keyText("tui.input.submit")} on the empty composer resumes it`,
+					"info",
+				);
+				return;
+			}
+			const names = [...new Set(inFlightTools.values())].join(", ");
+			if (pauseAfterToolsArmed) {
+				ctx.ui.notify(`Pause is already armed; waiting for ${names} to finish`, "info");
+				return;
+			}
+			pauseAfterToolsArmed = true;
+			ctx.ui.notify(
+				`Pausing after ${names} ${inFlightTools.size === 1 ? "finishes" : "finish"}; tool work keeps running`,
+				"info",
+			);
+		},
+	});
+
+	pi.on("session_start", async (event, ctx) => {
+		activeContext = ctx;
+		settingsManager = SettingsManager.create(ctx.cwd, undefined, { projectTrusted: ctx.isProjectTrusted() });
+		ctx.ui.setWidget(WIDGET_ID, undefined);
+		await restoreRuntimeStash(event.reason, ctx);
+		restoreSessionQueue(event.reason, ctx);
+		installEditor(ctx);
+		scheduleEditorInstall(ctx);
+		renderQueue(ctx);
+	});
+
+	// Recompose after late-installed editor chrome, such as pi-session-hud.
+	pi.on("agent_start", async (_event, ctx) => {
+		installEditor(ctx);
+		scheduleEditorInstall(ctx);
+		await settingsManager?.reload();
+		renderQueue(ctx);
+	});
+
+	pi.on("input", (event, ctx) => {
+		if (ctx.mode !== "tui" || event.source !== "interactive") return { action: "continue" };
+		activeContext = ctx;
+
+		// Safety net for editor wrappers installed after ours: an editing submit
+		// always saves in place and never changes the row's delivery lane.
+		if (editSession) {
+			finishEditing(ctx, true, event.text, event.images);
+			return { action: "handled" };
+		}
+
+		const command = parseQueuedCommand(event.text);
+		if (event.streamingBehavior === "steer" || event.streamingBehavior === "followUp") {
+			if (event.streamingBehavior === "steer") queue.enqueueSteer(event.text, event.images);
+			else queue.enqueue("followUp", event.text, event.images);
+			resumeQueue();
+			renderQueue(ctx);
+			return { action: "handled" };
+		}
+
+		// Alt+Enter can bypass Pi's built-in command dispatch while idle.
+		if (event.streamingBehavior === undefined && command && (event.images?.length ?? 0) === 0 && ctx.isIdle()) {
+			queue.enqueue("followUp", event.text, event.images ?? []);
+			paused = queuesWhileStopped(command);
+			// An explicit enqueue supersedes any error hold standing behind it.
+			errorHold = false;
+			renderQueue(ctx);
+			if (!paused) dispatchFromIdle(ctx);
+			return { action: "handled" };
+		}
+
+		return { action: "continue" };
+	});
+
+	pi.on("session_before_compact", (event, ctx) => {
+		activeContext = ctx;
+		if (blockingActivity || event.reason === "manual") return;
+		blockingActivity = "auto-compact";
+		compactionEpoch += 1;
+		cancelNativeFlushGrace();
+		compactionRecoveryFailed = false;
+		compactionIsOverflowRecovery = event.reason === "overflow";
+		nativeCompactionInputQueued = false;
+		nativeCompactionTurnStarted = false;
+		renderQueue(ctx);
+	});
+
+	pi.on("session_compact_failed", () => {
+		compactionRecoveryFailed = true;
+	});
+
+	pi.on("turn_start", (_event, ctx) => {
+		activeContext = ctx;
+		if (isCompacting() && nativeCompactionInputQueued) {
+			nativeCompactionTurnStarted = true;
+			// The flushed run is live; its settle owns the finish now.
+			cancelNativeFlushGrace();
+		}
+	});
+
+	pi.on("turn_end", async (event, ctx) => {
+		activeContext = ctx;
+		if (event.message.role === "assistant" && event.message.stopReason === "aborted") {
+			// A blocking control owns the abort tail it produced — a steered
+			// /compact, /new or /reload firing mid-run aborts the in-flight run
+			// on purpose. Only a bare user abort, or one under Pi-initiated
+			// auto-compaction, parks the queue.
+			if (queue.length > 0 && (blockingActivity === undefined || blockingActivity === "auto-compact")) {
+				pauseQueue();
+			}
+			renderQueue(ctx);
+			return;
+		}
+		if (paused) return;
+		// turn_end runs before agent_end, where a failed tail parks the queue
+		// behind an error hold. Dispatching a steer row at a failed turn would
+		// inject it into the failed run's native steering — or the retry or
+		// compaction that follows — jumping it ahead of the recovery the hold
+		// exists to protect. Hold it for the agent_end classification instead.
+		if (
+			event.message.role === "assistant"
+			&& (
+				event.message.stopReason === "error"
+				|| isContextOverflow(event.message, ctx.model?.contextWindow ?? 0)
+			)
+		) {
+			renderQueue(ctx);
+			return;
+		}
+		await dispatchLaneAtBoundary(ctx, "steer");
+	});
+
+	pi.on("tool_execution_start", (event) => {
+		inFlightTools.set(event.toolCallId, event.toolName);
+	});
+
+	pi.on("tool_execution_end", (event, ctx) => {
+		inFlightTools.delete(event.toolCallId);
+		if (!pauseAfterToolsArmed || inFlightTools.size > 0) return;
+		stopRunAtToolBoundary(ctx);
+	});
+
+	// Pi checks its native queues again after extension agent_end handlers.
+	// Feeding one item (or an all-mode batch) here preserves native follow-up
+	// continuation semantics without relinquishing later editable rows early.
+	pi.on("agent_end", async (event, ctx) => {
+		activeContext = ctx;
+		// A finished run has nothing in flight; never let leftovers from an
+		// aborted tool end leak into the next run.
+		inFlightTools.clear();
+		pauseAfterToolsArmed = false;
+		const lastMessage = event.messages.at(-1);
+		// Pi shapes an abort that lands before the first streamed chunk as an
+		// error tail ("This operation was aborted"), which turn_end's aborted
+		// branch never sees. A control row in flight owns that tail, so it must
+		// not be classified — let alone parked — as a failed run.
+		if (
+			lastMessage?.role === "assistant"
+			&& !blockingActivity
+			&& (
+				lastMessage.stopReason === "error"
+				|| isContextOverflow(lastMessage, ctx.model?.contextWindow ?? 0)
+			)
+		) {
+			// Pause on every failed tail, settled or not. Pi decides whether to
+			// retry or auto-compact only after agent_end, and retry extensions
+			// such as pi-retry re-prompt from the idle signal — any dispatch now,
+			// or the settle flush that used to follow, would jump a row ahead of
+			// that recovery. The hold lifts at the first healthy tail below; a
+			// run that settles still failed keeps its rows parked for an explicit
+			// empty-composer Enter.
+			pauseForFailedRun(ctx);
+			return;
+		}
+		// Aborted tails prove nothing about recovery, so they leave an error
+		// hold standing; anything else that produced assistant output counts
+		// as recovery and lifts the hold before the usual dispatch checks.
+		if (lastMessage?.role === "assistant" && lastMessage.stopReason !== "aborted") {
+			if (errorHold) resumeQueue();
+		}
+		if (lastMessage?.role === "assistant" && lastMessage.stopReason === "length") {
+			// Pi decides whether to retry or auto-compact only after agent_end.
+			// Injecting a follow-up here would start it first and hide that signal.
+			return;
+		}
+		if (paused) return;
+		const head = queue.peek();
+		if (head) await dispatchLaneAtBoundary(ctx, head.lane);
+	});
+
+	pi.on("agent_settled", (_event, ctx) => {
+		activeContext = ctx;
+		if (blockingActivity === "compact" && extensionCompactionInFlight) {
+			// An extension-started compaction aborts the run and Pi settles that
+			// abort before summarization even starts; the completion callback
+			// owns the finish, or the trailing rows would never dispatch.
+			renderQueue(ctx);
+			return;
+		}
+		if (blockingActivity === "compact" || blockingActivity === "auto-compact") {
+			const activity = blockingActivity;
+			if (nativeCompactionInputQueued && !nativeCompactionTurnStarted) {
+				armNativeFlushGrace(ctx, activity);
+				renderQueue(ctx);
+				return;
+			}
+			// The ordinary post-compaction turn, if any, is now fully settled.
+			nativeCompactionInputQueued = false;
+			deferCompactionFinish(ctx, activity);
+			return;
+		}
+		renderQueue(ctx);
+		if (!paused && !editSession && queue.length > 0 && ctx.isIdle() && !blockingActivity) dispatchFromIdle(ctx);
+	});
+
+	pi.on("session_shutdown", (event, ctx) => {
+		// Retire this runtime generation first: any preflight acknowledgement that
+		// lands after teardown must not mutate stale pi/ctx or a replacement queue.
+		lifecycleGeneration += 1;
+		dispatchInFlight = false;
+		inFlightIds.clear();
+		cancelNativeFlushGrace();
+		const queuedNewHandoff =
+			event.reason === "new"
+			&& plannedNewSession
+			&& pendingNewRowId !== undefined
+			&& queue.get(pendingNewRowId) !== undefined;
+		if (event.reason === "reload" && queue.length > 0) {
+			const stash: RuntimeStash = { reason: "reload", paused, rows: queue.snapshot() };
+			globalThis.__tmustierPiQueueSteerReloadStash = stash;
+			globalThis.__piastraPiQueueReloadStash = stash;
+		} else if (queuedNewHandoff) {
+			queue.remove(pendingNewRowId!);
+			try {
+				persistQueueTombstone(pi);
+			} catch (error) {
+				ctx.ui.notify(
+					`Could not retire the old session queue snapshot: ${error instanceof Error ? error.message : String(error)}`,
+					"error",
+				);
+			}
+			const outgoingModel = ctx.model
+				? { provider: ctx.model.provider, id: ctx.model.id }
+				: undefined;
+			const stash: RuntimeStash = { reason: "new", paused, rows: queue.snapshot(), model: outgoingModel };
+			globalThis.__tmustierPiQueueSteerReloadStash = stash;
+			globalThis.__piastraPiQueueReloadStash = stash;
+		} else {
+			globalThis.__tmustierPiQueueSteerReloadStash = undefined;
+			globalThis.__piastraPiQueueReloadStash = undefined;
+			// Ordinary shutdowns leave committed rows in the outgoing session for
+			// a later paused resume. Intentional reload and queued /new handoffs use
+			// the in-process stash instead and never duplicate their trailing rows.
+			if (queue.length > 0) {
+				try {
+					persistQueueSnapshot(pi, queue.snapshot(), paused);
+				} catch (error) {
+					ctx.ui.notify(
+						`Could not persist queued rows for resume: ${error instanceof Error ? error.message : String(error)}`,
+						"error",
+					);
+				}
+			}
+		}
+		if (editorInstallTimer) clearTimeout(editorInstallTimer);
+		queueSidebar.dispose();
+		unsubscribeConversationQueueBridge();
+		if (commandSubmitTimer) clearTimeout(commandSubmitTimer);
+		if (compactionFinishTimer) clearTimeout(compactionFinishTimer);
+		if (activeContext?.hasUI) {
+			const currentFactory = activeContext.ui.getEditorComponent();
+			if (
+				baseEditorFactoryCaptured
+				&& currentFactory
+				&& editorFeatures(currentFactory).has(QUEUE_STEER_FEATURE)
+			) {
+				activeContext.ui.setEditorComponent(baseEditorFactory);
+			}
+			activeContext.ui.setWidget(WIDGET_ID, undefined);
+		}
+		activeContext = undefined;
+		renderInlineEditor = undefined;
+		editorInstallTimer = undefined;
+		baseEditorFactory = undefined;
+		baseEditorFactoryCaptured = false;
+		commandSubmitTimer = undefined;
+		compactionFinishTimer = undefined;
+		editSession = undefined;
+		settingsManager = undefined;
+		fabricAwaitAbort?.abort();
+		fabricAwaitAbort = undefined;
+		fabricAwaitNote = "";
+		resumeQueue();
+		blockingActivity = undefined;
+		pauseAfterToolsArmed = false;
+		inFlightTools.clear();
+		pendingNewRowId = undefined;
+		plannedNewSession = false;
+		nativeCompactionInputQueued = false;
+		nativeCompactionTurnStarted = false;
+		compactionRecoveryFailed = false;
+		compactionIsOverflowRecovery = false;
+		extensionCompactionInFlight = false;
+		tuiSubmit = undefined;
+		queue.clear();
+	});
+
+	/**
+	 * Re-adopt committed rows from the resumed session file. Only runtime
+	 * starts that genuinely open an existing session restore: cold restarts
+	 * reopen the same session JSONL and an in-process /resume rebinds the
+	 * target session's file. Fresh, forked and reloaded runtimes never
+	 * inherit rows; reload uses the in-process stash instead.
+	 */
+	function restoreSessionQueue(reason: string, ctx: ExtensionContext): void {
+		if (reason !== "startup" && reason !== "resume") return;
+		if (queue.length > 0) return;
+		const snapshot = latestQueueSnapshot(ctx.sessionManager.getBranch());
+		if (!snapshot || snapshot.rows.length === 0) return;
+		try {
+			queue.restore(snapshot.rows);
+		} catch (error) {
+			ctx.ui.notify(
+				`Could not restore queued rows: ${error instanceof Error ? error.message : String(error)}`,
+				"error",
+			);
+			return;
+		}
+		// Restored rows always park in the paused state: nothing ships until
+		// the user presses Enter on the empty composer.
+		pauseQueue();
+		ctx.ui.notify(
+			`Restored ${snapshot.rows.length} queued row${snapshot.rows.length === 1 ? "" : "s"} after resume; queue paused — ${keyText("tui.input.submit")} sends the next row`,
+			"info",
+		);
+	}
+
+	/**
+	 * Pin the outgoing session's model back onto the replacement runtime. Pi
+	 * resolves a fresh session's model from the shared saved default — the last
+	 * model any session persisted, so a concurrent session can repoint it — or
+	 * from the first scoped model, which can differ from the model this queue
+	 * was running under. Applied before the transferred tail auto-dispatches.
+	 */
+	async function restoreHandoffModel(
+		target: { provider: string; id: string },
+		ctx: ExtensionContext,
+		stashReason: string,
+	): Promise<void> {
+		const current = ctx.model;
+		if (current && current.provider === target.provider && current.id === target.id) return;
+		try {
+			const restored = ctx.modelRegistry.find(target.provider, target.id);
+			if (restored && (await pi.setModel(restored))) {
+				ctx.ui.notify(`Restored model ${target.provider}/${target.id} after ${stashReason}`, "info");
+				return;
+			}
+		} catch (error) {
+			ctx.ui.notify(
+				`Could not restore model ${target.provider}/${target.id} after ${stashReason}: ${error instanceof Error ? error.message : String(error)}`,
+				"warning",
+			);
+			return;
+		}
+		ctx.ui.notify(
+			`Could not restore model ${target.provider}/${target.id} after ${stashReason}; continuing with ${current ? `${current.provider}/${current.id}` : "Pi's default model"}`,
+			"warning",
+		);
+	}
+
+	/** Re-adopt committed queue state after an intentional in-process runtime swap. */
+	async function restoreRuntimeStash(reason: string, ctx: ExtensionContext): Promise<void> {
+		// The upstream key is authoritative; the PiAstra alias only serves a
+		// stash written by a pre-rename runtime of this fork.
+		const stash = globalThis.__tmustierPiQueueSteerReloadStash ?? globalThis.__piastraPiQueueReloadStash;
+		globalThis.__tmustierPiQueueSteerReloadStash = undefined;
+		globalThis.__piastraPiQueueReloadStash = undefined;
+		const stashReason = stash?.reason ?? "reload";
+		if (!stash || reason !== stashReason) return;
+		if (stash.model) await restoreHandoffModel(stash.model, ctx, stashReason);
+		if (stash.rows.length > 0) {
+			queue.restore(stash.rows);
+			paused = stash.paused;
+			errorHold = false;
+			ctx.ui.notify(
+				`Restored ${stash.rows.length} queued row${stash.rows.length === 1 ? "" : "s"} after ${stashReason}`,
+				"info",
+			);
+		}
+		setTimeout(() => {
+			const current = activeContext;
+			if (current && !paused && !editSession && queue.length > 0 && current.isIdle()) {
+				dispatchFromIdle(current);
+			}
+		}, 0);
+	}
+}

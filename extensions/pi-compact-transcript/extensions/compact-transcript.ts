@@ -1,0 +1,1482 @@
+// PiAstra-managed fork of pi-compact-transcript@0.10.1 (MIT).
+// Original: https://github.com/avhagedorn/pi-compact-transcript © Alan Hagedorn <avhagedorn@gmail.com>.
+// Licensed MIT; see ../LICENSE. Fork changes (PiAstra):
+//  - PiAstra's `delegate` tools always use the native rich renderer fully expanded
+//    (never compacted, hidden, or grouped in bursts), bounded by the tool's own renderer.
+//  - Compact "enabled" is a single persisted global setting (user-wide
+//    compact-transcript.json written by /compact-transcript); legacy session-branch
+//    entries no longer override the enabled state (other preferences still apply).
+//  - Expansion toggle is NOT a registered shortcut: pi's extension runner
+//    reserves "app.tools.expand" (ctrl+o) and silently skips extension
+//    registerShortcut overrides (see runner.js RESERVED_KEYBINDINGS). Instead
+//    the plugin exposes the synchronous cross-extension event
+//    "piastra:compact-transcript:toggle"; the PiAstra shortcuts editor emits it
+//    for ctrl+o and falls back to the native app.tools.expand handler when the
+//    plugin leaves the envelope's handled flag false (compact off).
+import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
+import {
+	AssistantMessageComponent,
+	CONFIG_DIR_NAME,
+	getAgentDir,
+	getMarkdownTheme,
+	ToolExecutionComponent,
+} from "@earendil-works/pi-coding-agent";
+import { type Component, Markdown, Spacer, Text, truncateToWidth } from "@earendil-works/pi-tui";
+import { readFileSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
+
+// Older versions of this extension wrote a footer status under this key; it is
+// kept only to clear that status once per session for users upgrading in place.
+const STATUS_KEY = "compact-transcript";
+const CONFIG_ENTRY_TYPE = "compact-transcript-config";
+const SUMMARY_ENTRY_TYPE = "compact-transcript-summary";
+
+const MIN_PREVIEW_WIDTH = 20;
+const MAX_PREVIEW_WIDTH = 104;
+// Leave room for pi's row gutter/padding so compact lines never wrap.
+const PREVIEW_MARGIN = 6;
+const BLINK_INTERVAL_MS = 400;
+// Status marker is two cells wide ("◆ ").
+const MARKER_WIDTH = 2;
+const COMMENTARY_RAIL_WIDTH = 2;
+
+type SummaryStyle = "plain" | "quote";
+
+type CompactTranscriptConfig = {
+	enabled: boolean;
+	summaryStyle: SummaryStyle;
+	highlightToolActions: boolean;
+};
+
+// PiAstra delegation tool: always rendered natively at full expansion.
+const DELEGATE_TOOL_NAMES = new Set(["delegate"]);
+
+function isDelegateTool(name: string | undefined | null): boolean {
+	return typeof name === "string" && DELEGATE_TOOL_NAMES.has(name.split(".").pop() ?? name);
+}
+
+type ToolInfo = {
+	id: string;
+	name: string;
+	args: any;
+	preview: string;
+	writeLines?: number;
+	hidden?: boolean;
+	running?: boolean;
+	burstCount?: number;
+	startedAt?: number;
+	durationMs?: number;
+	burstDurationMs?: number;
+	diffStats?: DiffStats;
+	result?: string;
+	isError?: boolean;
+	invalidate?: () => void;
+};
+
+type RunStats = {
+	startedAt: number;
+	toolCount: number;
+	readFiles: Set<string>;
+	editFiles: Set<string>;
+	commandCount: number;
+	otherCount: number;
+	failedCount: number;
+};
+
+type DiffStats = {
+	additions: number;
+	deletions: number;
+};
+
+type SummaryData = {
+	reads: number;
+	edits: number;
+	commands: number;
+	others: number;
+	failed: number;
+	durationMs: number;
+};
+
+type RuntimeState = {
+	config: CompactTranscriptConfig;
+	toolsById: Map<string, ToolInfo>;
+	currentBurst: ToolInfo[];
+	hiddenToolIds: Set<string>;
+	runningToolIds: Set<string>;
+	agentActive: boolean;
+	blinkOn: boolean;
+	// Authoritative per-session expansion policy. Starts collapsed for every
+	// session (session_start), and Ctrl+O toggles it. Remote components obey
+	// this value regardless of pi's inherited toolOutputExpanded state.
+	userExpansion: boolean;
+	blinkTimer?: ReturnType<typeof setInterval>;
+	runStats: RunStats;
+	// Live transcript components, so toggling can re-render existing rows.
+	// Tools are keyed by call id so a rebuilt mount with the same call id
+	// (reload re-renders the same history) replaces the stale one instead of
+	// accumulating dead mounts. Assistants parked behind WeakRefs allow pi to
+	// collect unmounted rows.
+	toolComponents: Map<string, any>;
+	assistantComponents: Set<WeakRef<any>>;
+	currentTheme?: Theme;
+	thinkingHidden: boolean;
+	currentThoughtHeading?: string;
+	thoughtAnchorId?: string;
+};
+
+const DEFAULT_CONFIG: CompactTranscriptConfig = {
+	enabled: true,
+	summaryStyle: "plain",
+	highlightToolActions: false,
+};
+
+const STATE_KEY = Symbol.for("pi-compact-transcript.state");
+const TOOL_PATCH_KEY = Symbol.for("pi-compact-transcript.tool-patch");
+const ASSISTANT_PATCH_KEY = Symbol.for("pi-compact-transcript.assistant-patch");
+
+// Persisted dismissal flag so users who decline are never asked again.
+const NAG_DISMISSED_KEY = "settingsNagDismissed";
+
+// Only show the startup settings tip once per pi process lifetime.
+let startupSettingsNagShown = false;
+
+function newRunStats(): RunStats {
+	return {
+		startedAt: Date.now(),
+		toolCount: 0,
+		readFiles: new Set(),
+		editFiles: new Set(),
+		commandCount: 0,
+		otherCount: 0,
+		failedCount: 0,
+	};
+}
+
+function normalizeConfig(input: unknown, fallback = DEFAULT_CONFIG): CompactTranscriptConfig {
+	const source = (input && typeof input === "object" ? input : {}) as Record<string, unknown>;
+	let enabled = fallback.enabled;
+	if (typeof source.enabled === "boolean") {
+		enabled = source.enabled;
+	} else if (typeof source.mode === "string") {
+		// Pre-0.5 config persisted a mode string instead of an enabled flag.
+		enabled = source.mode !== "disabled" && source.mode !== "off";
+	}
+	const summaryStyle = source.summaryStyle === "plain" || source.summaryStyle === "quote"
+		? source.summaryStyle
+		: fallback.summaryStyle;
+	const highlightToolActions = typeof source.highlightToolActions === "boolean"
+		? source.highlightToolActions
+		: fallback.highlightToolActions;
+	return { enabled, summaryStyle, highlightToolActions };
+}
+
+function readConfigFile(path: string, fallback: CompactTranscriptConfig): CompactTranscriptConfig | undefined {
+	try {
+		const parsed: unknown = JSON.parse(readFileSync(path, "utf8"));
+		if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return undefined;
+		return normalizeConfig(parsed, fallback);
+	} catch {
+		// Missing, unreadable, or malformed config files use the next fallback.
+		return undefined;
+	}
+}
+
+function loadConfigFromFiles(ctx: ExtensionContext): CompactTranscriptConfig {
+	let nextConfig = { ...DEFAULT_CONFIG };
+	const userConfig = readConfigFile(join(getAgentDir(), "compact-transcript.json"), nextConfig);
+	if (userConfig) nextConfig = userConfig;
+
+	// Project-local configuration is only meaningful after Pi has trusted the
+	// project. Never inspect this path for an untrusted project.
+	if (ctx.isProjectTrusted()) {
+		const projectConfig = readConfigFile(
+			join(ctx.cwd, CONFIG_DIR_NAME, "compact-transcript.json"),
+			nextConfig,
+		);
+		if (projectConfig) nextConfig = projectConfig;
+	}
+
+	return nextConfig;
+}
+
+function getState(): RuntimeState {
+	const globalWithState = globalThis as typeof globalThis & { [STATE_KEY]?: RuntimeState };
+	globalWithState[STATE_KEY] ??= {
+		config: { ...DEFAULT_CONFIG },
+		toolsById: new Map(),
+		currentBurst: [],
+		hiddenToolIds: new Set(),
+		runningToolIds: new Set(),
+		agentActive: false,
+		blinkOn: true,
+		userExpansion: false,
+		runStats: newRunStats(),
+		toolComponents: new Map(),
+		assistantComponents: new Set(),
+		thinkingHidden: true,
+	};
+	const runtimeState = globalWithState[STATE_KEY]!;
+	// /reload keeps the global object alive; initialize fields added by newer
+	// versions when an older extension instance created the state object.
+	runtimeState.config = normalizeConfig(runtimeState.config);
+	runtimeState.thinkingHidden ??= true;
+	runtimeState.userExpansion ??= false;
+	if (!(runtimeState.toolComponents instanceof Map)) runtimeState.toolComponents = new Map();
+	if (!(runtimeState.assistantComponents instanceof Set)) runtimeState.assistantComponents = new Set();
+	return runtimeState;
+}
+
+const state = getState();
+
+function isEnabled(): boolean {
+	return state.config.enabled;
+}
+
+function isNonEmptyString(value: unknown): value is string {
+	return typeof value === "string" && value.trim().length > 0;
+}
+
+function shortenPath(path: unknown): string {
+	if (typeof path !== "string" || !path) return "";
+	const home = homedir();
+	return path.startsWith(home) ? `~${path.slice(home.length)}` : path;
+}
+
+function oneLine(value: unknown): string {
+	return String(value ?? "")
+		.replace(/\s+/g, " ")
+		.trim();
+}
+
+function previewWidth(base = process.stdout.columns || 100): number {
+	return Math.max(MIN_PREVIEW_WIDTH, Math.min(MAX_PREVIEW_WIDTH, base - PREVIEW_MARGIN));
+}
+
+function limitPlain(text: string, max = previewWidth()): string {
+	const clean = oneLine(text);
+	if (clean.length <= max) return clean;
+	return `${clean.slice(0, Math.max(0, max - 1))}…`;
+}
+
+function quote(s: string): string {
+	return JSON.stringify(s);
+}
+
+function safeJson(value: unknown): string {
+	try {
+		return JSON.stringify(value ?? {});
+	} catch {
+		return String(value);
+	}
+}
+
+// Sub-second durations render as "" so fast tools stay clutter-free.
+function formatDuration(ms: number): string {
+	if (!Number.isFinite(ms) || ms < 1000) return "";
+	const totalSeconds = Math.round(ms / 1000);
+	if (totalSeconds < 60) return `${totalSeconds}s`;
+	const minutes = Math.floor(totalSeconds / 60);
+	const seconds = totalSeconds % 60;
+	return seconds ? `${minutes}m${seconds}s` : `${minutes}m`;
+}
+
+// Checked in order; earlier keys are more likely to be the argument a human
+// would recognize the call by.
+const PREFERRED_ARG_KEYS = [
+	"command",
+	"code",
+	"query",
+	"pattern",
+	"path",
+	"file_path",
+	"filePath",
+	"file",
+	"url",
+	"prompt",
+	"text",
+	"description",
+	"name",
+];
+const PATH_ARG_KEYS = new Set(["path", "file_path", "filePath", "file"]);
+
+function previewFor(name: string, args: any): string {
+	switch (name) {
+		case "bash":
+			return `$ ${oneLine(args?.command || "...")}`;
+		case "read": {
+			let out = `read ${shortenPath(args?.path) || "..."}`;
+			if (args?.offset !== undefined || args?.limit !== undefined) {
+				const start = args.offset ?? 1;
+				const end = args.limit !== undefined ? start + args.limit - 1 : "";
+				out += `:${start}${end ? `-${end}` : ""}`;
+			}
+			return out;
+		}
+		case "write":
+			return `write ${shortenPath(args?.path) || "..."}`;
+		case "edit": {
+			const edits = Array.isArray(args?.edits) ? args.edits.length : 0;
+			return `edit ${shortenPath(args?.path) || "..."}${edits > 1 ? ` (${edits} edits)` : ""}`;
+		}
+		case "grep": {
+			const pattern = args?.pattern ? quote(String(args.pattern)) : "...";
+			const path = shortenPath(args?.path) || ".";
+			return `grep ${pattern} ${path}${args?.glob ? ` (${args.glob})` : ""}`;
+		}
+		case "find":
+			return `find ${args?.pattern ? quote(String(args.pattern)) : "..."} ${shortenPath(args?.path) || "."}`;
+		case "ls":
+			return `ls ${shortenPath(args?.path) || "."}`;
+		default: {
+			// Unknown tools: show the most meaningful string argument instead of
+			// dumping the whole args object as JSON.
+			if (args && typeof args === "object") {
+				for (const key of PREFERRED_ARG_KEYS) {
+					const value = (args as Record<string, unknown>)[key];
+					if (isNonEmptyString(value)) {
+						const rendered = PATH_ARG_KEYS.has(key) ? shortenPath(value) : oneLine(value);
+						return `${name} ${rendered}`;
+					}
+				}
+				const firstString = Object.values(args).find(isNonEmptyString);
+				if (firstString) return `${name} ${oneLine(firstString)}`;
+			}
+			return `${name} ${safeJson(args ?? {})}`;
+		}
+	}
+}
+
+function lineCount(text: string): number {
+	if (!text) return 0;
+	const lines = text.replace(/\r\n/g, "\n").split("\n");
+	if (lines[lines.length - 1] === "") lines.pop();
+	return lines.length;
+}
+
+function diffStatsFromArgs(args: any): DiffStats | undefined {
+	if (!Array.isArray(args?.edits)) return undefined;
+	let additions = 0;
+	let deletions = 0;
+	for (const edit of args.edits) {
+		if (typeof edit?.oldText !== "string" || typeof edit?.newText !== "string") return undefined;
+		deletions += lineCount(edit.oldText);
+		additions += lineCount(edit.newText);
+	}
+	return additions || deletions ? { additions, deletions } : undefined;
+}
+
+function diffStatsFromResult(result: any): DiffStats | undefined {
+	const diff = typeof result?.details?.diff === "string"
+		? result.details.diff
+		: typeof result?.details?.patch === "string"
+			? result.details.patch
+			: "";
+	if (!diff) return undefined;
+
+	let additions = 0;
+	let deletions = 0;
+	for (const line of diff.split(/\r?\n/)) {
+		if (line.startsWith("+++") || line.startsWith("---")) continue;
+		if (line.startsWith("+")) additions++;
+		else if (line.startsWith("-")) deletions++;
+	}
+	return additions || deletions ? { additions, deletions } : undefined;
+}
+
+function formatDiffStats(stats: DiffStats | undefined): string {
+	return stats ? `+${stats.additions}/-${stats.deletions}` : "";
+}
+
+function colorDiffStats(theme: Theme, stats: string): string {
+	const match = /^\+(\d+)\/(?:-)(\d+)$/.exec(stats);
+	if (!match) return theme.fg("toolDiffContext", `{${stats}}`);
+	return (
+		theme.fg("toolDiffContext", "{") +
+		theme.fg("toolDiffAdded", `+${match[1]}`) +
+		theme.fg("toolDiffContext", "/") +
+		theme.fg("toolDiffRemoved", `-${match[2]}`) +
+		theme.fg("toolDiffContext", "}")
+	);
+}
+
+function isEditTool(name: string): boolean {
+	return name.split(".").pop() === "edit";
+}
+
+function isWriteTool(name: string): boolean {
+	return name.split(".").pop() === "write";
+}
+
+function resultPreview(result: any, isPartial = false): string {
+	const text = Array.isArray(result?.content)
+		? result.content.find((c: any) => c?.type === "text" && typeof c.text === "string")?.text
+		: undefined;
+	if (!text) return isPartial ? "running" : "";
+	const lines = String(text).trim().split("\n").filter(Boolean);
+	if (lines.length === 0) return isPartial ? "running" : "";
+	if (lines.length === 1) return lines[0];
+	return `${lines.length} lines`;
+}
+
+function resetToolRun() {
+	state.toolsById = new Map();
+	state.currentBurst = [];
+	state.hiddenToolIds = new Set();
+	state.runningToolIds = new Set();
+	state.currentThoughtHeading = undefined;
+	state.thoughtAnchorId = undefined;
+	stopBlinkTimer();
+}
+
+// Drop every per-session tool row and mounted-component registry. Called when
+// the current session is torn down or a tree branch switch rebuilds history:
+// both are followed by pi re-rendering the transcript BEFORE the matching
+// session_start (or with no session_start at all), so the rebuilt mounts must
+// hydrate from a clean per-session state instead of inheriting old bursts.
+function dropSessionState() {
+	resetToolRun();
+	state.runStats = newRunStats();
+	state.toolComponents = new Map();
+	state.assistantComponents = new Set();
+	state.userExpansion = false;
+}
+
+// Re-apply the per-session expansion policy to components that were already
+// rendered before session_start fired, then repaint them. pi renders rebuilt
+// history before session_start for /reload and /resume, so the mounts already
+// hold compiled collapsed/expanded output that session_start's policy reset
+// must reconcile.
+function reconcileMountedComponents() {
+	for (const [id, component] of state.toolComponents) {
+		try {
+			if (!isDelegateTool(component.toolName)) component.setExpanded(state.userExpansion);
+		} catch {
+			state.toolComponents.delete(id);
+		}
+	}
+	refreshTranscript();
+}
+
+function captureTheme(ctx: ExtensionContext) {
+	state.currentTheme = ctx.ui.theme;
+}
+
+function setToolHidden(info: ToolInfo, hidden: boolean) {
+	info.hidden = hidden;
+	if (hidden) state.hiddenToolIds.add(info.id);
+	else state.hiddenToolIds.delete(info.id);
+}
+
+function applyResult(info: ToolInfo, result: any, isError: boolean, isPartial: boolean) {
+	const diffStats = isEditTool(info.name) ? diffStatsFromResult(result) : undefined;
+	if (diffStats) info.diffStats = diffStats;
+	else if (isError) info.diffStats = undefined;
+	const suffix = resultPreview(result, isPartial);
+	if (suffix) info.result = suffix;
+	if (isError) {
+		info.isError = true;
+		// A failed tool always gets its own visible row, even if a burst had
+		// hidden it; render it as itself rather than as a burst summary.
+		info.burstCount = 1;
+		setToolHidden(info, false);
+	}
+}
+
+function ensureBlinkTimer() {
+	if (state.blinkTimer || state.runningToolIds.size === 0) return;
+	state.blinkTimer = setInterval(() => {
+		if (state.runningToolIds.size === 0) {
+			stopBlinkTimer();
+			return;
+		}
+		state.blinkOn = !state.blinkOn;
+		for (const id of state.runningToolIds) state.toolsById.get(id)?.invalidate?.();
+	}, BLINK_INTERVAL_MS);
+	state.blinkTimer.unref?.();
+}
+
+function stopBlinkTimer() {
+	if (state.blinkTimer) clearInterval(state.blinkTimer);
+	state.blinkTimer = undefined;
+	state.blinkOn = true;
+}
+
+function statusMarker(theme: Theme, opts: { running?: boolean; isError?: boolean; hasResult?: boolean }): string {
+	if (opts.isError) return theme.fg("error", "◆ ");
+	if (opts.running) return theme.fg("dim", state.blinkOn ? "◆ " : "◇ ");
+	if (opts.hasResult) return theme.fg("success", "◆ ");
+	return theme.fg("dim", "◆ ");
+}
+
+function textSignalHasVisibleContent(assistantMessageEvent: any): boolean {
+	const type = assistantMessageEvent?.type;
+	if (type === "text_delta") {
+		return typeof assistantMessageEvent.delta === "string" && assistantMessageEvent.delta.trim().length > 0;
+	}
+	if (type === "text_end") {
+		return typeof assistantMessageEvent.content === "string" && assistantMessageEvent.content.trim().length > 0;
+	}
+	return false;
+}
+
+function thoughtTickerEnabled(): boolean {
+	// The ticker is a compact replacement for hidden thinking. When thinking is
+	// fully visible, showing the same headline under a tool would be duplicate.
+	return isEnabled() && state.thinkingHidden;
+}
+
+function cleanThoughtHeading(line: string): string {
+	let clean = oneLine(line)
+		.replace(/^#{1,6}\s+/, "")
+		.replace(/^[-*]\s+/, "")
+		.trim();
+	clean = clean
+		.replace(/^\*\*(.+)\*\*$/, "$1")
+		.replace(/^__(.+)__$/, "$1")
+		.replace(/^`(.+)`$/, "$1");
+	return clean.trim();
+}
+
+function extractThoughtHeading(text: unknown): string {
+	if (typeof text !== "string") return "";
+	const firstLine = text.split(/\r?\n/).find((line) => line.trim().length > 0);
+	return firstLine ? cleanThoughtHeading(firstLine) : "";
+}
+
+function latestThoughtHeading(message: any): string {
+	if (!Array.isArray(message?.content)) return "";
+	for (let i = message.content.length - 1; i >= 0; i--) {
+		const content = message.content[i];
+		if (content?.type === "thinking") return extractThoughtHeading(content.thinking);
+	}
+	return "";
+}
+
+function invalidateToolById(id: string | undefined) {
+	if (!id) return;
+	state.toolsById.get(id)?.invalidate?.();
+}
+
+function latestVisibleTool(): ToolInfo | undefined {
+	return Array.from(state.toolsById.values())
+		.reverse()
+		.find((tool) => !tool.hidden);
+}
+
+function clearCurrentThought() {
+	if (!state.currentThoughtHeading && !state.thoughtAnchorId) return;
+	const previousAnchorId = state.thoughtAnchorId;
+	state.currentThoughtHeading = undefined;
+	state.thoughtAnchorId = undefined;
+	invalidateToolById(previousAnchorId);
+}
+
+function setCurrentThought(heading: string) {
+	const nextHeading = oneLine(heading);
+	if (!thoughtTickerEnabled() || !nextHeading) {
+		clearCurrentThought();
+		return;
+	}
+
+	const previousAnchorId = state.thoughtAnchorId;
+	const nextAnchorId = latestVisibleTool()?.id;
+	const changed = state.currentThoughtHeading !== nextHeading || previousAnchorId !== nextAnchorId;
+	state.currentThoughtHeading = nextHeading;
+	state.thoughtAnchorId = nextAnchorId;
+	if (!changed) return;
+
+	invalidateToolById(previousAnchorId);
+	if (nextAnchorId !== previousAnchorId) invalidateToolById(nextAnchorId);
+}
+
+function updateCurrentThoughtFromMessage(message: any) {
+	const heading = latestThoughtHeading(message);
+	// A new thinking block starts empty; keep showing the previous heading until
+	// the replacement has real text so the ticker does not blink off/on between
+	// tool completion and the next streamed thought.
+	if (heading) setCurrentThought(heading);
+}
+
+function anchorCurrentThoughtTo(info: ToolInfo) {
+	if (!thoughtTickerEnabled() || !state.currentThoughtHeading || state.thoughtAnchorId === info.id) return;
+	const previousAnchorId = state.thoughtAnchorId;
+	state.thoughtAnchorId = info.id;
+	invalidateToolById(previousAnchorId);
+	info.invalidate?.();
+}
+
+function currentThoughtLine(toolCallId: string, theme: Theme): string {
+	const renderAnchorId = latestVisibleTool()?.id ?? state.thoughtAnchorId;
+	if (!thoughtTickerEnabled() || renderAnchorId !== toolCallId || !state.currentThoughtHeading) return "";
+	const prefix = "  ↳ ";
+	const budget = previewWidth((process.stdout.columns || 100) - prefix.length);
+	return theme.fg("dim", prefix) + theme.fg("thinkingText", limitPlain(state.currentThoughtHeading, budget));
+}
+
+function upsertToolInfo(id: string, name: string, args: any, invalidate?: () => void): ToolInfo {
+	let info = state.toolsById.get(id);
+	if (!info) {
+		info = { id, name, args, preview: previewFor(name, args) };
+		state.toolsById.set(id, info);
+	}
+	info.name = name;
+	info.args = args;
+	info.preview = previewFor(name, args);
+	info.writeLines = isWriteTool(name) && typeof args?.content === "string" ? lineCount(args.content) : undefined;
+	if (isEditTool(name) && !info.diffStats) info.diffStats = diffStatsFromArgs(args);
+	if (invalidate) info.invalidate = invalidate;
+	return info;
+}
+
+function recordToolStart(name: string, args: any) {
+	const base = name.split(".").pop() ?? name;
+	state.runStats.toolCount++;
+	if (base === "read") {
+		if (isNonEmptyString(args?.path)) state.runStats.readFiles.add(args.path);
+	} else if (base === "edit" || base === "write") {
+		if (isNonEmptyString(args?.path)) state.runStats.editFiles.add(args.path);
+	} else if (base === "bash") {
+		state.runStats.commandCount++;
+	} else {
+		state.runStats.otherCount++;
+	}
+}
+
+function joinBurst(info: ToolInfo) {
+	// Delegate rows never join or form bursts; they must always render as
+	// themselves, fully expanded, even while ordinary tools are collapsed.
+	if (isDelegateTool(info.name)) {
+		state.currentBurst = [];
+		info.burstCount = 1;
+		return;
+	}
+
+	const previous = state.currentBurst[state.currentBurst.length - 1];
+
+	if (!isEnabled()) {
+		state.currentBurst = [];
+		return;
+	}
+
+	// Bursts only group repeats of the same tool; a different tool starts a
+	// fresh row (and leaves the previous row visible with its count).
+	if (state.currentBurst.length && state.currentBurst[state.currentBurst.length - 1].name !== info.name) {
+		state.currentBurst = [];
+	}
+
+	if (!state.currentBurst.some((tool) => tool.id === info.id)) state.currentBurst.push(info);
+	for (const tool of state.currentBurst.slice(0, -1)) setToolHidden(tool, true);
+	info.burstCount = state.currentBurst.length;
+	previous?.invalidate?.();
+}
+
+function beginTool(id: string, name: string, args: any) {
+	const info = upsertToolInfo(id, name, args);
+	setToolHidden(info, false);
+	info.burstCount = 1;
+	info.running = true;
+	info.isError = false;
+	info.startedAt = Date.now();
+	state.runningToolIds.add(id);
+	ensureBlinkTimer();
+	recordToolStart(name, args);
+	joinBurst(info);
+	anchorCurrentThoughtTo(info);
+	// The component may already be on screen from argument streaming; repaint
+	// now so the running marker, burst count, and thought ticker appear
+	// immediately instead of waiting for the next result event or blink tick.
+	info.invalidate?.();
+}
+
+// A tool row rendered without a live tool_execution_start event — pi is
+// rebuilding chat history after resume/reload. Reconstruct burst grouping so
+// scrollback coalesces the same way the live view did, but skip timers,
+// stats, and running state.
+function hydrateTool(id: string, name: string, args: any, isError: boolean): ToolInfo {
+	const info = upsertToolInfo(id, name, args);
+	setToolHidden(info, false);
+	info.burstCount = 1;
+	if (isError) {
+		info.isError = true;
+		state.currentBurst = [];
+		return info;
+	}
+	joinBurst(info);
+	return info;
+}
+
+function updateToolResult(toolCallId: string, result: any, isError = false, isPartial = false) {
+	if (!isPartial) {
+		state.runningToolIds.delete(toolCallId);
+		if (state.runningToolIds.size === 0) stopBlinkTimer();
+	}
+	const info = state.toolsById.get(toolCallId);
+	if (!info) return;
+	if (!isPartial) {
+		info.running = false;
+		if (info.startedAt) info.durationMs = Date.now() - info.startedAt;
+		if (state.currentBurst.includes(info) && state.currentBurst.length > 1) {
+			info.burstDurationMs = state.currentBurst.reduce((total, tool) => total + (tool.durationMs ?? 0), 0);
+		}
+		if (isError) state.runStats.failedCount++;
+	}
+	applyResult(info, result, isError, isPartial);
+	// A failure ends the current burst so the red row stays visible and the
+	// next tool starts a fresh count.
+	if (isError) state.currentBurst = [];
+	info.invalidate?.();
+}
+
+function compactToolLine(
+	toolCallId: string,
+	name: string,
+	args: any,
+	theme: Theme,
+	invalidate?: () => void,
+	result?: any,
+	isError = false,
+	isPartial = false,
+): string {
+	if (!state.toolsById.has(toolCallId)) hydrateTool(toolCallId, name, args, isError);
+	const info = upsertToolInfo(toolCallId, name, args, invalidate);
+	applyResult(info, result, isError, isPartial);
+	if (info.hidden) return "";
+
+	const isBurst = (info.burstCount ?? 1) > 1;
+	const durationText = formatDuration((isBurst ? (info.burstDurationMs ?? info.durationMs) : info.durationMs) ?? 0);
+	const editStats = isEditTool(info.name) ? formatDiffStats(info.diffStats) : "";
+	const writeStats =
+		isWriteTool(info.name) && !info.isError && info.writeLines !== undefined
+			? formatDiffStats({ additions: info.writeLines, deletions: 0 })
+			: "";
+	const stats = editStats || writeStats;
+	const inner = [info.result ? oneLine(info.result) : "", durationText].filter(Boolean).join(" · ");
+	const status = stats ? ` {${stats}}` : inner ? ` {${inner}}` : info.running ? " {running}" : "";
+	const details = `${info.preview}${status}`;
+	const marker = statusMarker(theme, {
+		running: info.running,
+		isError: info.isError,
+		hasResult: result != null || !!info.result,
+	});
+	const color = info.isError ? "muted" : "dim";
+	const prefix = isBurst ? `${info.burstCount}× ` : "";
+	const budget = previewWidth((process.stdout.columns || 100) - prefix.length - MARKER_WIDTH);
+	const plainLine = prefix + limitPlain(details, budget);
+	const action = info.name === "bash" ? /^\$\s+\S+/.exec(info.preview)?.[0] ?? "$" : info.name;
+	const actionStart = prefix.length;
+	const actionEnd = Math.min(actionStart + action.length, plainLine.length);
+	const statsMarker = stats ? `{${stats}}` : "";
+	const statsIndex = statsMarker ? plainLine.lastIndexOf(statsMarker) : -1;
+	if (!state.config.highlightToolActions) {
+		if (statsIndex >= 0) {
+			return (
+				marker +
+				theme.fg(color, plainLine.slice(0, statsIndex)) +
+				colorDiffStats(theme, stats) +
+				theme.fg(color, plainLine.slice(statsIndex + statsMarker.length))
+			);
+		}
+		return marker + theme.fg(color, plainLine);
+	}
+	const beforeStatsEnd = statsIndex >= 0 ? statsIndex : plainLine.length;
+	return (
+		marker +
+		theme.fg(color, plainLine.slice(0, actionStart)) +
+		theme.fg("toolTitle", theme.bold(plainLine.slice(actionStart, actionEnd))) +
+		theme.fg(color, plainLine.slice(actionEnd, beforeStatsEnd)) +
+		(statsIndex >= 0 ? colorDiffStats(theme, stats) : "") +
+		theme.fg(color, statsIndex >= 0 ? plainLine.slice(statsIndex + statsMarker.length) : "")
+	);
+}
+
+function patchToolExecutionComponent() {
+	const proto = ToolExecutionComponent.prototype as any;
+	if (typeof proto.updateDisplay !== "function" || typeof proto.render !== "function") return;
+	const existing = proto[TOOL_PATCH_KEY] as
+		| { originalUpdateDisplay: (...args: any[]) => any; originalRender: (...args: any[]) => any }
+		| undefined;
+	const originalUpdateDisplay = existing?.originalUpdateDisplay ?? proto.updateDisplay;
+	const originalRender = existing?.originalRender ?? proto.render;
+
+	proto.updateDisplay = function patchedUpdateDisplay() {
+		if (!this.toolCallId || !this.toolName || !this.selfRenderContainer || typeof this.selfRenderContainer.clear !== "function") {
+			this.__compactTranscriptForceSelf = false;
+			this.__compactTranscriptHidden = false;
+			return originalUpdateDisplay.call(this);
+		}
+		// Keyed by call id: a rebuilt mount for the same call id replaces the
+		// superseded component instead of piling up dead mounts across reloads.
+		state.toolComponents.set(this.toolCallId, this);
+
+		const invalidate = () => {
+			this.invalidate();
+			this.ui?.requestRender?.();
+		};
+		// Delegates are always native and fully expanded; they are never
+		// compacted, hidden, or grouped into bursts. This branch must run
+		// before the rehydrated-history burst reconstruction below, which
+		// would otherwise hide or coalesce the row.
+		if (isDelegateTool(this.toolName)) {
+			// Delegates sit between ordinary tools in history. The FIRST time this
+			// call is seen (hydration or live start) the open burst must end here,
+			// otherwise the following same-tool rows would group ACROSS the delegate
+			// (e.g. grep → delegate → grep collapses into a single "2× grep" row
+			// that hides the first grep). Later repaints of the same delegate row
+			// must leave bursts formed after it untouched, so the break happens only
+			// when the call was not registered yet.
+			const delegateFirstSeen = !state.toolsById.has(this.toolCallId);
+			this.expanded = true;
+			this.__compactTranscriptForceSelf = false;
+			this.__compactTranscriptHidden = false;
+			const delegateInfo = upsertToolInfo(this.toolCallId, this.toolName, this.args, invalidate);
+			applyResult(delegateInfo, this.result, this.result?.isError ?? false, this.isPartial);
+			delegateInfo.burstCount = 1;
+			setToolHidden(delegateInfo, false);
+			if (delegateFirstSeen) state.currentBurst = [];
+			return originalUpdateDisplay.call(this);
+		}
+		if (!state.toolsById.has(this.toolCallId)) {
+			hydrateTool(this.toolCallId, this.toolName, this.args, this.result?.isError ?? false);
+		}
+		const info = upsertToolInfo(this.toolCallId, this.toolName, this.args, invalidate);
+		applyResult(info, this.result, this.result?.isError ?? false, this.isPartial);
+
+		if (!isEnabled() || this.expanded) {
+			setToolHidden(info, false);
+			this.__compactTranscriptForceSelf = false;
+			this.__compactTranscriptHidden = false;
+			return originalUpdateDisplay.call(this);
+		}
+
+		this.__compactTranscriptForceSelf = true;
+		this.__compactTranscriptHidden = false;
+		this.selfRenderContainer.clear();
+		for (const image of this.imageComponents ?? []) this.removeChild?.(image);
+		for (const spacer of this.imageSpacers ?? []) this.removeChild?.(spacer);
+		this.imageComponents = [];
+		this.imageSpacers = [];
+
+		const theme = state.currentTheme;
+		if (!theme) {
+			this.__compactTranscriptForceSelf = false;
+			this.__compactTranscriptHidden = false;
+			return originalUpdateDisplay.call(this);
+		}
+
+		const line = compactToolLine(
+			this.toolCallId,
+			this.toolName,
+			this.args,
+			theme,
+			invalidate,
+			this.result,
+			this.result?.isError ?? false,
+			this.isPartial,
+		);
+
+		if (!line) {
+			this.__compactTranscriptHidden = true;
+			return;
+		}
+
+		this.selfRenderContainer.addChild({
+			render: (width: number) => [truncateToWidth(line, Math.max(0, width), theme.fg("dim", "…"))],
+			invalidate() {},
+		});
+		const thoughtLine = currentThoughtLine(this.toolCallId, theme);
+		if (thoughtLine) this.selfRenderContainer.addChild(new Text(thoughtLine, 0, 0));
+	};
+
+	proto.render = function patchedRender(width: number) {
+		if (this.hideComponent || this.__compactTranscriptHidden) return [];
+		if (this.__compactTranscriptForceSelf) return this.selfRenderContainer.render(width);
+		return originalRender.call(this, width);
+	};
+
+	proto[TOOL_PATCH_KEY] = { originalUpdateDisplay, originalRender };
+}
+
+class CommentaryRail implements Component {
+	private readonly content: Component;
+
+	constructor(content: Component) {
+		this.content = content;
+	}
+
+	render(width: number): string[] {
+		if (width <= COMMENTARY_RAIL_WIDTH) return this.content.render(width);
+		const rail = state.currentTheme?.fg("accent", "│ ") ?? "│ ";
+		return this.content.render(width - COMMENTARY_RAIL_WIDTH).map((line) => rail + line);
+	}
+
+	invalidate(): void {
+		this.content.invalidate();
+	}
+}
+
+// pi-tui may be loaded as more than one module instance (the coding agent pins
+// its own copy), so `instanceof Markdown` misses Markdown children created by
+// pi's native AssistantMessageComponent. Match by identity when possible and by
+// the stable exported class name otherwise.
+function isMarkdownComponent(component: any): boolean {
+	return component instanceof Markdown || component?.constructor?.name === "Markdown";
+}
+
+function frameCommentary(component: any, message: any): void {
+	if (!message.content.some((content: any) => content.type === "toolCall")) return;
+	const children = component.contentContainer?.children;
+	if (!Array.isArray(children)) return;
+	let framed = false;
+	for (let i = 0; i < children.length; i++) {
+		if (isMarkdownComponent(children[i])) {
+			children[i] = new CommentaryRail(children[i]);
+			framed = true;
+		}
+	}
+	if (framed) component.contentContainer.addChild(new Spacer(1));
+}
+
+function patchAssistantMessageComponent() {
+	const proto = AssistantMessageComponent.prototype as any;
+	if (typeof proto.updateContent !== "function") return;
+	const existing = proto[ASSISTANT_PATCH_KEY] as { originalUpdateContent: (...args: any[]) => any } | undefined;
+	const originalUpdateContent = existing?.originalUpdateContent ?? proto.updateContent;
+
+	proto.updateContent = function patchedUpdateContent(this: any, message: any, isStreaming = this.isStreaming) {
+		// WeakRef so rebuilt sessions/reloads can collect superseded rows.
+		if (!this.__compactTranscriptWeakRef) this.__compactTranscriptWeakRef = new WeakRef(this);
+		state.assistantComponents.add(this.__compactTranscriptWeakRef);
+		state.thinkingHidden = !!this.hideThinkingBlock;
+		if (!state.thinkingHidden) clearCurrentThought();
+		if (!isEnabled() || !Array.isArray(message?.content)) {
+			return originalUpdateContent.call(this, message, isStreaming);
+		}
+		if (!this.hideThinkingBlock) {
+			const result = originalUpdateContent.call(this, message, isStreaming);
+			frameCommentary(this, message);
+			return result;
+		}
+
+		// Compact mode hides thinking blocks entirely. Native updateContent already
+		// renders accurate stopReason status (provider error/abort/length warnings)
+		// and routes text through the real Markdown transformers, so hand it a
+		// shallow view with ONLY thinking blocks removed. Status logic stays in pi.
+		const filteredMessage = {
+			...message,
+			content: message.content.filter((c: any) => c.type !== "thinking"),
+		};
+
+		// Keep the existing compact semantics: real assistant text ends the current
+		// tool burst and clears the hidden-thought ticker unless tool calls are
+		// still pending. Thinking-only turns leave both untouched.
+		const hasTexts = message.content.some((c: any) => c.type === "text" && c.text?.trim());
+		if (hasTexts) {
+			if (!message.content.some((c: any) => c.type === "toolCall") && state.runningToolIds.size === 0) {
+				clearCurrentThought();
+			}
+			state.currentBurst = [];
+		}
+
+		try {
+			const result = originalUpdateContent.call(this, filteredMessage, isStreaming);
+			frameCommentary(this, message);
+			return result;
+		} finally {
+			// Native updateContent sets lastMessage to the filtered view. Keep the
+			// ORIGINAL message so invalidate()/setHideThinkingBlock()/setOutputPad()
+			// can always re-render the full source and a later thinking reveal does
+			// not silently lose content.
+			this.lastMessage = message;
+		}
+	};
+
+	proto[ASSISTANT_PATCH_KEY] = { originalUpdateContent };
+}
+
+function patchRenderers() {
+	patchToolExecutionComponent();
+	patchAssistantMessageComponent();
+	patchToolExecutionExpansion();
+}
+
+// Re-render every transcript row we have touched so toggling applies to the
+// visible transcript immediately instead of only to future rows.
+function refreshTranscript() {
+	let ui: any;
+	for (const [id, component] of state.toolComponents) {
+		try {
+			// ToolExecutionComponent.invalidate() re-runs updateDisplay.
+			component.invalidate?.();
+			ui ??= component.ui;
+		} catch {
+			state.toolComponents.delete(id);
+		}
+	}
+	for (const ref of [...state.assistantComponents]) {
+		const component = ref?.deref?.() ?? ref;
+		if (!component) {
+			state.assistantComponents.delete(ref);
+			continue;
+		}
+		try {
+			if (component.lastMessage) component.updateContent?.(component.lastMessage);
+			component.invalidate?.();
+		} catch {
+			state.assistantComponents.delete(ref);
+		}
+	}
+	ui?.requestRender?.();
+}
+
+function summaryLine(data: SummaryData): string {
+	const plural = (count: number) => (count === 1 ? "" : "s");
+	const parts: string[] = [];
+	if (data.reads) parts.push(`read ${data.reads} file${plural(data.reads)}`);
+	if (data.edits) parts.push(`edited ${data.edits} file${plural(data.edits)}`);
+	if (data.commands) parts.push(`ran ${data.commands} command${plural(data.commands)}`);
+	if (data.others) parts.push(`${data.others} other tool${plural(data.others)}`);
+	if (data.failed) parts.push(`${data.failed} failed`);
+	if (parts.length === 0) return "";
+	const text = parts.join(", ");
+	const capitalized = text[0].toUpperCase() + text.slice(1);
+	const duration = formatDuration(data.durationMs);
+	return duration ? `${capitalized} · ${duration}` : capitalized;
+}
+
+function normalizeSummary(input: unknown): SummaryData {
+	const source = (input && typeof input === "object" ? input : {}) as Record<string, unknown>;
+	const num = (value: unknown) => (typeof value === "number" && Number.isFinite(value) && value > 0 ? value : 0);
+	return {
+		reads: num(source.reads),
+		edits: num(source.edits),
+		commands: num(source.commands),
+		others: num(source.others),
+		failed: num(source.failed),
+		durationMs: num(source.durationMs),
+	};
+}
+
+function appendRunSummary(pi: ExtensionAPI) {
+	const stats = state.runStats;
+	// Single-tool runs are self-evident from the transcript; a summary line
+	// would just repeat the row above it.
+	if (!isEnabled() || stats.toolCount < 2) return;
+	const data: SummaryData = {
+		reads: stats.readFiles.size,
+		edits: stats.editFiles.size,
+		commands: stats.commandCount,
+		others: stats.otherCount,
+		failed: stats.failedCount,
+		durationMs: Date.now() - stats.startedAt,
+	};
+	pi.appendEntry(SUMMARY_ENTRY_TYPE, data);
+}
+
+function restoreConfigFromBranch(ctx: ExtensionContext) {
+	// PiAstra fork: the compact "enabled" state ignores legacy session-branch
+	// entries; it is a single persisted global setting (enabled lives in the
+	// user-wide compact-transcript.json). Other preferences recorded in branch
+	// entries still merge over the file configuration.
+	let nextConfig = loadConfigFromFiles(ctx);
+	for (const entry of ctx.sessionManager.getBranch()) {
+		if (entry.type === "custom" && entry.customType === CONFIG_ENTRY_TYPE) {
+			// Merge only the non-enabled preferences the branch entry actually
+			// carries; fields it lacks keep following the file configuration.
+			const branchRaw = (entry.data && typeof entry.data === "object" ? entry.data : {}) as Record<string, unknown>;
+			nextConfig = {
+				enabled: nextConfig.enabled,
+				summaryStyle:
+					typeof branchRaw.summaryStyle === "string" && (branchRaw.summaryStyle === "plain" || branchRaw.summaryStyle === "quote")
+						? branchRaw.summaryStyle
+						: nextConfig.summaryStyle,
+				highlightToolActions: typeof branchRaw.highlightToolActions === "boolean"
+					? branchRaw.highlightToolActions
+					: nextConfig.highlightToolActions,
+			};
+		}
+	}
+	state.config = nextConfig;
+}
+
+function readNagDismissedFlag(): boolean {
+	const configPath = join(getAgentDir(), "compact-transcript.json");
+	try {
+		const parsed: unknown = JSON.parse(readFileSync(configPath, "utf8"));
+		if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+			return (parsed as Record<string, unknown>)[NAG_DISMISSED_KEY] === true;
+		}
+	} catch {
+		// Missing or unreadable config — assume not dismissed.
+	}
+	return false;
+}
+
+function persistNagDismissed() {
+	const configPath = join(getAgentDir(), "compact-transcript.json");
+	let config: Record<string, unknown> = {};
+	try {
+		const raw = readFileSync(configPath, "utf8");
+		const parsed: unknown = JSON.parse(raw);
+		if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+			config = parsed as Record<string, unknown>;
+		}
+	} catch {
+		// File missing or unreadable — start fresh.
+	}
+	config[NAG_DISMISSED_KEY] = true;
+	writeFileSync(configPath, JSON.stringify(config, null, 2) + "\n", "utf8");
+}
+
+function checkAndNotifyRecommendedSettings(ctx: ExtensionContext) {
+	if (startupSettingsNagShown) return;
+	startupSettingsNagShown = true;
+
+	// User previously dismissed the dialog.
+	if (readNagDismissedFlag()) return;
+
+	const settingsPath = join(getAgentDir(), "settings.json");
+	let settings: Record<string, unknown> = {};
+	try {
+		const raw = readFileSync(settingsPath, "utf8");
+		const parsed: unknown = JSON.parse(raw);
+		if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+			settings = parsed as Record<string, unknown>;
+		}
+	} catch {
+		// Missing or unreadable settings file — skip.
+		return;
+	}
+
+	const needsThinkingFix = settings.hideThinkingBlock !== true;
+	const needsPadFix = settings.outputPad !== 0;
+	if (!needsThinkingFix && !needsPadFix) return;
+
+	const missing: string[] = [];
+	if (needsThinkingFix) missing.push("hideThinkingBlock: true");
+	if (needsPadFix) missing.push("outputPad: 0");
+
+	// In non-TUI modes (RPC, print), fall back to a one-time warning notification
+	// since interactive dialogs are unavailable.
+	if (ctx.mode !== "tui") {
+		ctx.ui.notify(
+			`Compact Transcript tip: set ${missing.join(", ")} in /settings for the best experience.`,
+			"warning",
+		);
+		return;
+	}
+
+	// Interactive confirm dialog.
+	const message = [
+		"Compact Transcript works best with:",
+		...missing.map((m) => `  • ${m}`),
+		"",
+		"Apply these recommended settings now?",
+	].join("\n");
+
+	ctx.ui.confirm("Compact Transcript", message).then((accepted) => {
+		if (accepted) {
+			// Re-read settings fresh (may have changed since we last read).
+			let current: Record<string, unknown> = {};
+			try {
+				const raw = readFileSync(settingsPath, "utf8");
+				const parsed: unknown = JSON.parse(raw);
+				if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+					current = parsed as Record<string, unknown>;
+				}
+			} catch {
+				// Shouldn't happen since we just read it, but handle gracefully.
+			}
+			if (needsThinkingFix) current.hideThinkingBlock = true;
+			if (needsPadFix) current.outputPad = 0;
+			writeFileSync(settingsPath, JSON.stringify(current, null, 2) + "\n", "utf8");
+			ctx.ui.notify(
+				"Compact Transcript settings applied! Reload to take effect (/reload).",
+				"info",
+			);
+		} else {
+			persistNagDismissed();
+			ctx.ui.notify(
+				"Compact Transcript tip dismissed. Adjust anytime via /settings.",
+				"info",
+			);
+		}
+	});
+}
+
+// Persist the compact enabled state as the single global setting in the
+// user-wide compact-transcript.json, preserving unrelated fields there.
+function persistEnabled(enabled: boolean) {
+	const configPath = join(getAgentDir(), "compact-transcript.json");
+	let config: Record<string, unknown> = {};
+	try {
+		const parsed: unknown = JSON.parse(readFileSync(configPath, "utf8"));
+		if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+			config = parsed as Record<string, unknown>;
+		}
+	} catch {
+		// File missing or unreadable — start a fresh config object.
+	}
+	config.enabled = enabled;
+	try {
+		writeFileSync(configPath, JSON.stringify(config, null, 2) + "\n", "utf8");
+	} catch {
+		// Persistence is best-effort; the in-memory state still applies.
+	}
+}
+
+function setEnabled(enabled: boolean, pi: ExtensionAPI, ctx: ExtensionContext) {
+	state.config.enabled = enabled;
+	// Legacy session entries are still stamped for older downstream readers,
+	// but this fork's own loading ignores them (see restoreConfigFromBranch).
+	pi.appendEntry(CONFIG_ENTRY_TYPE, { enabled });
+	persistEnabled(enabled);
+	state.userExpansion = false;
+	for (const [id, component] of state.toolComponents) {
+		try {
+			if (!isDelegateTool(component.toolName)) component.setExpanded(false);
+		} catch {
+			state.toolComponents.delete(id);
+		}
+	}
+	refreshTranscript();
+	ctx.ui.notify(`Compact transcript: ${enabled ? "on" : "off"}`, "info");
+}
+
+function toggleToolExpansion(ctx?: ExtensionContext) {
+	// Authoritative plugin expansion policy: the expansion toggle flips per-session
+	// expansion state, ignoring pi's inherited toolOutputExpanded value.
+	state.userExpansion = !state.userExpansion;
+	for (const [id, component] of state.toolComponents) {
+		try {
+			if (!isDelegateTool(component.toolName)) component.setExpanded(state.userExpansion);
+		} catch {
+			state.toolComponents.delete(id);
+		}
+	}
+	if (ctx?.ui?.notify) ctx.ui.notify(`Tool output: ${state.userExpansion ? "expanded" : "collapsed"}`, "info");
+}
+
+// Symbol used to keep the setExpanded patch idempotent across /reload.
+const SET_EXPANDED_PATCH_KEY = Symbol.for("pi-compact-transcript.set-expanded-patch");
+
+function patchToolExecutionExpansion() {
+	const proto = ToolExecutionComponent.prototype as any;
+	if (typeof proto.setExpanded !== "function") return;
+	const existing = proto[SET_EXPANDED_PATCH_KEY] as { originalSetExpanded: (expanded: boolean) => void } | undefined;
+	const originalSetExpanded = existing?.originalSetExpanded ?? proto.setExpanded;
+	proto.setExpanded = function patchedSetExpanded(this: any, expanded: boolean) {
+		// Authoritative plugin policy: with compact enabled, ordinary tools
+		// follow the per-session plugin expansion state, so pi's inherited
+		// toolOutputExpanded applied on session switch cannot force expansion.
+		if (isEnabled() && !isDelegateTool(this.toolName)) {
+			expanded = state.userExpansion;
+		}
+		return originalSetExpanded.call(this, expanded);
+	};
+	proto[SET_EXPANDED_PATCH_KEY] = { originalSetExpanded };
+}
+
+/*
+ * Expansion-toggle event contract (cross-extension, synchronous):
+ * pi's extension runner reserves app.tools.expand (ctrl+o), so this plugin
+ * cannot register an overriding shortcut. Instead the PiAstra shortcuts editor
+ * (or any other integration) emits on the shared extension event bus:
+ *
+ *   pi.events.emit(COMPACT_TRANSCRIPT_TOGGLE_EVENT, { handled: false, ctx });
+ *   if (!envelope.handled) invoke the native app.tools.expand handler;
+ *
+ * The plugin's listener below runs synchronously inside emit (EventEmitter
+ * handlers execute during emit before it returns) and, ONLY when compact mode
+ * is enabled, flips the per-session expansion state and sets handled = true so
+ * the sender must not run the native fallback. When compact is off the plugin
+ * leaves handled = false and the native pi toggle (app.tools.expand) controls
+ * expanded rendering directly.
+ * Sender requirements: the envelope must be a mutable object
+ * `{ handled: boolean; ctx?: ExtensionContext }`; pass a TUI-mode ctx so the
+ * "Tool output: expanded/collapsed" notification can be shown.
+ */
+export const COMPACT_TRANSCRIPT_TOGGLE_EVENT = "piastra:compact-transcript:toggle";
+export type CompactTranscriptToggleEventEnvelope = {
+	handled: boolean;
+	ctx?: ExtensionContext;
+};
+
+function registerExpansionControl(pi: ExtensionAPI) {
+	patchToolExecutionExpansion();
+	// EventBus types the payload as unknown; the cast plus the guards below keep
+	// misshapen envelopes harmless while giving the handler the documented shape.
+	pi.events.on(COMPACT_TRANSCRIPT_TOGGLE_EVENT, (data: unknown) => {
+		const envelope = data as Partial<CompactTranscriptToggleEventEnvelope> | null | undefined;
+		if (!envelope || typeof envelope !== "object" || !envelope.ctx) return;
+		if (envelope.handled !== false) return;
+		if (!isEnabled()) return; // off mode: native app.tools.expand stays in control
+		if (envelope.ctx.mode !== "tui") return;
+		toggleToolExpansion(envelope.ctx);
+		// Synchronous mutation inside emit: the sender reads this back immediately.
+		envelope.handled = true;
+	});
+}
+
+function parseBoolean(value: string | undefined): boolean | undefined {
+	if (!value) return undefined;
+	const normalized = value.trim().toLowerCase();
+	if (["on", "true", "yes", "1", "enabled"].includes(normalized)) return true;
+	if (["off", "false", "no", "0", "disabled"].includes(normalized)) return false;
+	return undefined;
+}
+
+function registerCommand(pi: ExtensionAPI) {
+	pi.registerCommand("compact-transcript", {
+		description: "Toggle compact transcript rendering (on/off).",
+		getArgumentCompletions(prefix: string) {
+			return ["on", "off", "status"]
+				.filter((value) => value.startsWith(prefix.trimStart()))
+				.map((value) => ({ value, label: value }));
+		},
+		handler: async (args, ctx) => {
+			captureTheme(ctx);
+			const trimmed = args.trim().toLowerCase();
+			if (trimmed === "status") {
+				ctx.ui.notify(`Compact transcript: ${isEnabled() ? "on" : "off"}`, "info");
+				return;
+			}
+			if (!trimmed) {
+				setEnabled(!isEnabled(), pi, ctx);
+				return;
+			}
+			// on/off, plus pre-0.5 mode names as legacy aliases.
+			const legacyOn = ["balanced", "aggressive", "debug"].includes(trimmed);
+			const parsed = legacyOn ? true : parseBoolean(trimmed);
+			if (parsed !== undefined) {
+				setEnabled(parsed, pi, ctx);
+				return;
+			}
+			ctx.ui.notify(`Unknown option "${trimmed}". Usage: /compact-transcript [on|off|status]`, "error");
+		},
+	});
+}
+
+export default function compactTranscript(pi: ExtensionAPI) {
+	patchRenderers();
+	registerCommand(pi);
+	registerExpansionControl(pi);
+
+	pi.registerEntryRenderer<SummaryData>(SUMMARY_ENTRY_TYPE, (entry, _options, theme) => {
+		const line = summaryLine(normalizeSummary(entry.data));
+		if (!line) return undefined;
+		if (state.config.summaryStyle === "quote") {
+			return new Markdown(`> ${line}`, 0, 0, getMarkdownTheme());
+		}
+		return new Text(theme.fg("muted", line), 0, 0);
+	});
+
+	pi.on("session_start", async (event, ctx) => {
+		restoreConfigFromBranch(ctx);
+		captureTheme(ctx);
+		// ORDERING: pi renders rebuilt transcript history BEFORE this handler.
+		// For /reload the render runs in the session.reload beforeSessionStart
+		// hook, above the session_start emit; for /resume (and /new, /fork,
+		// import) rebindCurrentSession({renderBeforeBind:true}) renders before
+		// bindCurrentSessionExtensions emits session_start. Old-session state was
+		// already dropped in session_shutdown (resume, /new, /fork) or
+		// session_tree (branch navigation) — /reload tears down first as well —
+		// so the pre-start mounts registered here belong to the new history and
+		// must NOT be wiped: that would drop the already-rendered rows and lose
+		// their reconstructed bursts. Reconcile them to the fresh collapsed
+		// policy instead. Startup is the one case where render follows start; the
+		// runtime is genuinely fresh, dropping defensively is then a no-op.
+		if (event.reason === "startup") {
+			dropSessionState();
+		} else {
+			// Fresh per-session policy; pre-start mounts were rendered with the
+			// previous session's expansion decision, so push the fresh one.
+			state.userExpansion = false;
+			reconcileMountedComponents();
+		}
+		state.runStats = newRunStats();
+		// Every session starts collapsed regardless of pi's inherited
+		// toolOutputExpanded state; Ctrl+O expands deliberately.
+		state.userExpansion = false;
+		ctx.ui.setWorkingMessage();
+		// Clear any footer status left behind by pre-0.4 versions of this extension.
+		ctx.ui.setStatus(STATUS_KEY, undefined);
+
+		if (event.reason === "startup") {
+			checkAndNotifyRecommendedSettings(ctx);
+		}
+	});
+
+	pi.on("session_shutdown", async (_event, ctx) => {
+		stopBlinkTimer();
+		// The next session's rebuilt history renders BEFORE its session_start
+		// (reload beforeSessionStart hook / resume renderBeforeBind). Drop all
+		// per-session rows and mounts here so the pre-start render hydrates from
+		// clean state and no burst grouping or expansion policy of the outgoing
+		// session can leak into it.
+		dropSessionState();
+		ctx.ui.setStatus(STATUS_KEY, undefined);
+		ctx.ui.setWorkingMessage();
+	});
+
+	pi.on("session_tree", async () => {
+		// Branch navigation rebuilds the transcript without a session
+		// shutdown/start cycle; interactive-mode clears and re-renders the chat
+		// right after this event, so the registries must be reset first.
+		dropSessionState();
+	});
+
+	pi.on("agent_start", (_event, ctx) => {
+		state.agentActive = true;
+		captureTheme(ctx);
+		resetToolRun();
+		state.runStats = newRunStats();
+	});
+
+	pi.on("agent_end", (_event, _ctx) => {
+		state.agentActive = false;
+		state.currentBurst = [];
+		clearCurrentThought();
+		state.runningToolIds.clear();
+		stopBlinkTimer();
+		appendRunSummary(pi);
+	});
+
+	pi.on("turn_start", (_event, ctx) => {
+		captureTheme(ctx);
+	});
+
+	pi.on("message_update", (event, ctx) => {
+		captureTheme(ctx);
+		const type = event.assistantMessageEvent?.type;
+		if (typeof type === "string" && type.startsWith("thinking_")) {
+			updateCurrentThoughtFromMessage(event.message);
+		}
+		if (textSignalHasVisibleContent(event.assistantMessageEvent)) {
+			// AgentMessage is a union without a shared content field; read it
+			// structurally so the toolCall check stays behavior-identical.
+			const messageContent: unknown = (event.message as { content?: unknown } | undefined)?.content;
+			const messageHasToolCall = Array.isArray(messageContent) && messageContent.some((content: any) => content.type === "toolCall");
+			if (!messageHasToolCall && state.runningToolIds.size === 0) clearCurrentThought();
+			// Visible assistant text ends the current tool burst. Do not split on
+			// text_start alone: some providers create empty text blocks before a
+			// tool-only turn, and those blocks are hidden from the transcript.
+			state.currentBurst = [];
+		}
+	});
+
+	pi.on("tool_execution_start", (event, ctx) => {
+		captureTheme(ctx);
+		beginTool(event.toolCallId, event.toolName, event.args);
+	});
+
+	pi.on("tool_execution_update", (event, ctx) => {
+		captureTheme(ctx);
+		updateToolResult(event.toolCallId, event.partialResult, false, true);
+	});
+
+	pi.on("tool_execution_end", (event, ctx) => {
+		captureTheme(ctx);
+		updateToolResult(event.toolCallId, event.result, event.isError, false);
+	});
+}

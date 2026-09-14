@@ -18,32 +18,58 @@ const preview = (text: unknown) => {
   return value.length > 30000 ? `${value.slice(0, 30000)}\n[Preview truncated; see transcript.]` : value;
 };
 
+// Keep the normal transcript useful at a glance. Details remain available via Ctrl+O.
+export function toolSummary(name: unknown, args: any = {}) {
+  const tool = String(name || 'tool');
+  args = args || {};
+  const label = ({ read: 'Read', grep: 'Search', find: 'Find', ls: 'List', bash: 'Run',
+    edit: 'Edit', write: 'Write', inspect_git: 'Git', fetch_url: 'Fetch' } as any)[tool] || safe(tool).replace(/\s+/g, ' ');
+  const clean = (value: unknown) => safe(value).replace(/\s+/g, ' ').trim();
+  let value = '';
+  if (tool === 'grep' || tool === 'find') {
+    const pattern = clean(args.pattern);
+    const scope = clean(args.path || args.file_path || args.glob);
+    value = [pattern, scope && `in ${scope}`].filter(Boolean).join(' ');
+  } else {
+    value = clean(args.path || args.file_path || args.pattern || args.command || args.url ||
+      [args.operation, args.revision].filter(Boolean).join(' '));
+  }
+  return `${label}${value ? ` ${value.slice(0, 220)}` : ''}`;
+}
+
 export function renderTranscript(messages: any[], theme: any, width: number, expandedTools = true) {
   const lines: string[] = [];
   const calls = new Map<string, any>();
   for (const message of messages) {
     const parts = typeof message.content === 'string' ? [{ type: 'text', text: message.content }] : message.content || [];
+    for (const part of parts) if (part.type === 'toolCall') calls.set(part.id, part);
+  }
+  for (const message of messages) {
+    const parts = typeof message.content === 'string' ? [{ type: 'text', text: message.content }] : message.content || [];
     const visible = parts.filter((part: any) => part.type === 'text' || part.type === 'toolCall');
     if (!visible.length) continue;
     const tool = message.role === 'toolResult';
-    const title = tool ? `TOOL ${message.toolName}${message.isError ? ' · FAILED' : ''}` : String(message.role).toUpperCase();
-    lines.push(...new Text(theme.fg(message.isError ? 'error' : 'toolTitle', safe(title)), 0, 0).render(width));
     for (const part of visible) {
       if (part.type === 'toolCall') {
-        calls.set(part.id, part);
-        lines.push(...new Text(theme.fg('accent', `→ ${safe(part.name)}`), 0, 0).render(width));
+        const summary = toolSummary(part.name, part.arguments);
+        lines.push(...new Text(theme.fg('accent', `→ ${summary}`), 0, 0).render(width));
         if (expandedTools) lines.push(...codeLines(preview(JSON.stringify(part.arguments, null, 2)), 'json', width));
-        else lines.push(truncateToWidth(theme.fg('dim', safe(JSON.stringify(part.arguments))), width));
       } else if (tool) {
-        if (!expandedTools && !message.isError) {
-          lines.push(truncateToWidth(theme.fg('dim', safe(part.text).replace(/\s+/g, ' ') + ' · Ctrl+O to expand'), width));
-          continue;
-        }
         const call = calls.get(message.toolCallId);
         const file = call?.arguments?.path || call?.arguments?.file_path;
         const language = message.toolName === 'read' && file ? getLanguageFromPath(file) : undefined;
-        lines.push(...(language ? codeLines(preview(part.text), language, width)
-          : new Text(theme.fg('toolOutput', preview(part.text)), 0, 0).render(width)));
+        const output = preview(part.text);
+        if (!expandedTools && !message.isError) {
+          // Keep a long target from consuming the line needed to show the result.
+          const summaryWidth = Math.min(width, 64);
+          lines.push(truncateToWidth(theme.fg('dim', `✓ ${toolSummary(message.toolName, call?.arguments)} · Ctrl+O to expand`), summaryWidth));
+          const first = output.replace(/\s+/g, ' ').slice(0, 260);
+          if (first) lines.push(truncateToWidth(theme.fg('toolOutput', `  ${first}${output.length > first.length ? '…' : ''}`), width));
+        } else {
+          lines.push(truncateToWidth(theme.fg(message.isError ? 'error' : 'toolTitle', `${message.isError ? '✗' : '✓'} ${toolSummary(message.toolName, call?.arguments)}`), width));
+          lines.push(...(language ? codeLines(output, language, width)
+            : new Text(theme.fg(message.isError ? 'error' : 'toolOutput', output), 0, 0).render(width)));
+        }
       } else lines.push(...markdownLines(preview(part.text), width));
     }
     if (tool && expandedTools && !message.isError && message.toolName === 'edit' && typeof message.details?.diff === 'string') {
