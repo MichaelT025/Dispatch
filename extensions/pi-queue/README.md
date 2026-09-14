@@ -28,6 +28,8 @@ in `index.ts` only:
   - `sidebar.mjs` — publishes the Atelier sidebar panel `piastra:queue` from
     the real queue snapshot (Queued/Steer labels, paused/blocked states), with
     discover/dedup/unregister lifecycle and the protocol's 24-row/160-char cap.
+- Added (fork-owned, not vendored): `delivery.ts` — acknowledged delivery for
+  Pi's fire-and-forget `sendUserMessage` (see below).
 
 Not installed by default: add this directory's `index.ts` to the Pi
 `settings.json` extensions list. The PiAstra installer vendors and registers it
@@ -36,3 +38,35 @@ when present. Upstream commands `/pause`, `/queue-drain` (with
 upstream names and keybindings. The interop surface keeps its upstream contract:
 the `queue-steer:state` event and `__tmustierPiQueueSteerState` mirror (the
 `piastra:queue:state` / `__piastraPiQueueState` names remain as aliases).
+
+## Acknowledged delivery
+
+Pi's `ExtensionAPI.sendUserMessage` returns `void` and discards the underlying
+`AgentSession.prompt()` promise, so a queued row cannot tell an accepted prompt
+from one rejected during preflight — the old code assumed success and could drop
+a row that never reached the agent.
+
+`delivery.ts` exports `sendUserMessageWithAck(pi, content, options?)`, which
+bridges that gap without touching Pi's package. It installs one
+`AgentSession.prototype.prompt` wrapper per process (idempotent via a `Symbol.for`
+marker) backed by a shared `AsyncLocalStorage`. Only the extension's own
+`sendUserMessage` invocation runs inside the request scope; the wrapper claims
+the request, injects a `preflightResult` callback alongside any existing one,
+and returns Pi's original full-run promise untouched. The ALS scope is exited
+before the original prompt runs, so nested or unrelated prompts cannot steal the
+acknowledgement. The returned promise resolves on a real `preflightResult(true)`
+and rejects on `false`, on a synchronous host error, or when the host never
+routes through `AgentSession.prompt`; it never awaits the full run or falls back
+to a timeout heuristic.
+
+The queue keeps each row in the `DeliveryQueue` until that acknowledgement
+arrives. Every send path (idle head, resume/follow-up, lane batches, merged
+drain, immediate idle `/st`, internal `/new`) persists the row snapshot before
+invoking the send and only removes the row by id once Pi accepts it. A rejection
+retains the same ids, text, images and order, parks the queue, persists the
+paused state, and notifies — so a crash or shutdown during preflight still
+recovers the row. A serial in-flight guard stops repeat Enter/boundary/drain
+triggers from double-sending, while newly enqueued rows are never overwritten by
+a later restoration. Rows awaiting acknowledgement are excluded from editing and
+removal, and late acknowledgements after teardown are ignored via a lifecycle
+generation counter.
