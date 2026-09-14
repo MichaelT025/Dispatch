@@ -5,6 +5,10 @@ import { existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const agentDir = process.env.PI_CODING_AGENT_DIR || path.join(homedir(), '.pi', 'agent');
+// The managed Atelier fork is strictly opt-in: pass --atelier once to install
+// it. After that, reruns without the flag keep updating the managed copy
+// because its registration is already present in settings.json.
+const atelierOptIn = process.argv.slice(2).includes('--atelier');
 await mkdir(agentDir, { recursive: true });
 const target = path.join(agentDir, 'settings.json');
 let settings = {};
@@ -49,6 +53,25 @@ const compactSource = path.join(root, 'extensions', 'pi-compact-transcript');
 const compactTarget = path.join(installed, 'extensions', 'pi-compact-transcript');
 const compactIndex = path.join(compactTarget, 'index.ts');
 await cp(compactSource, compactTarget, { recursive: true, force: true, filter: vendoredRuntimeFilter });
+// Vendor the managed Atelier fork runtime files the same way: full npm layout
+// (extensions/index.ts, src/, assets/, LICENSE, README.md, package.json),
+// tests excluded. Copies happen here, before any settings.json mutation, so a
+// missing fork can never leave the config pointing at absent code.
+const atelierManagedIndex = path.join(installed, 'extensions', 'pi-atelier', 'extensions', 'index.ts');
+const atelierAlreadyManaged = (settings.extensions || []).includes(atelierManagedIndex);
+const atelierActive = atelierOptIn || atelierAlreadyManaged;
+if (atelierActive) {
+  const atelierSource = path.join(root, 'extensions', 'pi-atelier');
+  const atelierSourceIndex = path.join(atelierSource, 'extensions', 'index.ts');
+  if (!existsSync(atelierSourceIndex)) {
+    throw new Error(
+      `Missing pi-atelier fork runtime: ${atelierSourceIndex}\n` +
+        'The vendored fork (extensions/pi-atelier/extensions/index.ts) is required for the managed Atelier installation; refusing to update settings.json.',
+    );
+  }
+  const atelierTarget = path.join(installed, 'extensions', 'pi-atelier');
+  await cp(atelierSource, atelierTarget, { recursive: true, force: true, filter: vendoredRuntimeFilter });
+}
 const extension = path.join(installed, 'extensions', 'piastra', 'index.ts');
 const worktreeExtension = path.join(installed, 'extensions', 'pi-worktree', 'git-worktree.ts');
 const developmentPath = path.join(root, 'extensions', 'piastra', 'index.ts');
@@ -87,10 +110,34 @@ settings.packages = (settings.packages || []).map((entry) => {
   }
   return entry;
 });
+// The managed Atelier fork (opt-in via --atelier, then kept in sync by reruns
+// without the flag because the managed entry is already registered): register
+// the managed index exactly once, drop the current checkout's development
+// entry for this fork, and disable the upstream npm package's extension (bare
+// or versioned, string or object form) via extensions: [] so only the managed
+// copy loads. The package entry itself stays installed for updates and its
+// commands/docs, and the agent-dir config (pi-atelier.json) is never touched
+// here. Without opt-in and without an existing managed entry, Atelier
+// packages/settings are left completely alone.
+if (atelierActive) {
+  const developmentAtelierPath = path.join(root, 'extensions', 'pi-atelier', 'extensions', 'index.ts');
+  settings.extensions = [...new Set([
+    ...(settings.extensions || []).filter((p) => p !== developmentAtelierPath),
+    atelierManagedIndex,
+  ])];
+  const upstreamAtelier = /^npm:pi-atelier(?:@.*)?$/i;
+  settings.packages = (settings.packages || []).map((entry) => {
+    const source = typeof entry === 'string' ? entry : entry?.source;
+    if (upstreamAtelier.test(source || '')) {
+      return { ...(typeof entry === 'string' ? { source: entry } : entry), extensions: [] };
+    }
+    return entry;
+  });
+}
 const config = JSON.parse(await readFile(path.join(root, 'config/agents.json'), 'utf8')).orchestrator;
 const slash = config.model.indexOf('/');
 settings.defaultProvider = config.model.slice(0, slash);
 settings.defaultModel = config.model.slice(slash + 1);
 settings.defaultThinkingLevel = config.thinking;
 await writeFile(target, JSON.stringify(settings, null, 2) + '\n');
-console.log(`PiAstra installed in ${target}\nRun pi from any directory. /piastra shows the roles.\nStandalone extension copy: ${installed}\nRe-run this installer to update the installed code and role configuration.`);
+console.log(`PiAstra installed in ${target}\nRun pi from any directory. /piastra shows the roles.\nStandalone extension copy: ${installed}\nRe-run this installer to update the installed code and role configuration.${atelierActive ? '\nManaged Atelier fork installed and upstream npm:pi-atelier extension disabled.' : ''}`);

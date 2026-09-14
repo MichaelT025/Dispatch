@@ -76,19 +76,40 @@ customisations and future pi changes keep working. If an action id has no
 handler (for example in unit tests), the key falls back to normal editor
 handling.
 
-## Foreign editors
+## Atelier cooperation and foreign editors
+
+The **PiAstra-maintained Atelier fork** cooperates with these shortcuts. Enable
+it with `npm run install:cli -- --atelier`, then restart Pi or `/reload`. Merely
+editing this checkout does not update your installed extension copies. The
+upstream npm Atelier editor does not implement this cooperation protocol.
 
 `installShortcuts` captures `ctx.ui.getEditorComponent()` before installing
 its own factory:
 
-- **PiAstra's own factory** (found again after `/reload` or a session switch)
-  is replaced outright, marked with a brand property, so repeated reloads
-  never nest editors and stale session contexts are dropped.
-- **Foreign factories** (another extension owns the editor) are left untouched:
-  installation is skipped and a warning notification is shown. Composing would
-  either construct-and-discard the foreign editor (leaking its state) or
-  clobber its behavior, and the repo currently has no foreign editor, so the
-  graceful skip is the safe default.
+- **PiAstra's own factory** is rebuilt with fresh session context. Its previous
+  instance is disposed, cancelling the leader and pending shortcut actions.
+- **The fork's Atelier factory** publishes a version-1 `editorCapability` with
+  ID `piastra.atelier-frame`. PiAstra preserves its frame presentation while
+  creating a single `PiastraEditor`. If PiAstra starts first, its capability
+  (`piastra.shortcuts`) lets Atelier compose the same frame onto that editor.
+  The frame renders before the leader hint, so the hint stays visible.
+- **Unrecognized foreign factories** are left untouched. PiAstra warns and
+  skips installation; Atelier also declines to replace an unknown editor.
+
+Factory capabilities provide `readPresentations`, and PiAstra additionally
+provides `composePresentation` and `withoutPresentationsFor`. Entries carry a
+session-owned token, chrome width, minimum width and rendering function. No
+cross-package runtime imports, global input listeners or registry overrides
+are needed. Repeated enable operations do not nest frames.
+
+`/atelier disable` removes only its own frame, leaving shortcuts active;
+`/atelier enable` restores it. Cleanup checks the current factory's ownership,
+not a stale saved factory. Retired PiAstra factories cannot recreate an editor
+after shutdown. Both startup orders and shutdown orders are tested.
+
+The input component still inherits Pi's native submit, autocomplete, paste and
+extension-shortcut wiring. Overlays receive their own input; blur cancels the
+leader. This does not change the sidebar's scrolling behavior.
 
 Errors from shortcut actions never escape input handling: they are reported
 through `ctx.ui.notify`. In particular, cycling agents while the agent is busy
@@ -102,6 +123,10 @@ switching.
   Ctrl+T/leader-t action ids, native handlers, Ctrl+O handled vs. unhandled
   native fallback, leader timeout/cancel/unmatched, pass-through,
   foreign-editor skip, lifecycle, busy guard).
+- `extensions/pi-atelier/src/editor.ts` — optional frame presentation and
+  ownership-safe composition/removal.
+- `extensions/pi-atelier/tests/editor-cooperation.test.mjs` and
+  `shortcut-lifecycle.test.mjs` — composed editor and real extension lifecycle checks.
 - `extensions/piastra/index.ts` — installs the shortcuts and shares the agent
   picker between `/agent` and the leader `a` action.
 
