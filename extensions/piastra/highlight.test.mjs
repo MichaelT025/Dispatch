@@ -23,7 +23,10 @@ test('highlighted edits preserve native execution, patch details, replay and wor
     const component = tool.renderResult(result, { expanded: false }, theme, { args, argsComplete: false, isError: false });
     const rendered = component.render(100).join('\n');
     assert.match(stripTerminalSequences(rendered), /const count = 2/);
-    assert.ok(new Set(rendered.match(/\x1b\[38;2;[\d;]+m/g)).size > 2);
+    // Headless Linux uses 256-color output; desktop terminals may use truecolor.
+    // Require distinct syntax colors in either encoding, not a specific terminal.
+    const foregroundColors = rendered.match(/\x1b\[38;(?:2;\d+;\d+;\d+|5;\d+)m/g) ?? [];
+    assert.ok(new Set(foregroundColors).size > 2, 'expected multiple syntax foreground colors');
     const messages = [
       { role: 'assistant', content: [{ type: 'toolCall', id: 'test', name: 'edit', arguments: args }] },
       { role: 'toolResult', toolCallId: 'test', toolName: 'edit', ...result },

@@ -116,8 +116,9 @@ npm run start:fork [workspace]        # node scripts/start-fork.mjs
   startup empty-state timing flake (assertion raced the rendered empty state);
   it did not reproduce in the final passes and is recorded here as a known
   timing sensitivity, not a functional failure.
-- Live SDK integration (`extensions/piastra/fork-runtime.test.mjs`, runs against
-  the fork's own SDK; skipped when the checkout is absent): extension loads in a
+- Live SDK integration (`tests/integration/fork-runtime.test.mjs`, runs against
+  the fork's own SDK via `npm run test:integration`; now explicitly fails with
+  setup instructions when the checkout is absent): extension loads in a
   fork session with zero load errors, `delegate` active and subagent tools
   absent after bind; `/agent general` switches the session model to
   `opencode-go/glm-5.3-flash` (no model request).
