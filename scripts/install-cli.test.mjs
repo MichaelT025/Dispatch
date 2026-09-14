@@ -72,27 +72,19 @@ async function writeFixtureFork(root, { includeTests = true } = {}) {
   }
 }
 
-// Build a self-contained source tree from tracked support files plus the
-// synthetic fork, so the suite runs without depending on the real (untracked)
-// vendored fork.
-async function buildSourceRoot({ includeFork = true } = {}) {
-  const sourceRoot = await mkdtemp(path.join(tmpdir(), 'piastra-src-'));
-  for (const file of supportFiles) {
-    await mkdir(path.join(sourceRoot, path.dirname(file)), { recursive: true });
-    await cp(path.join(repoRoot, file), path.join(sourceRoot, file));
-  }
-  if (includeFork) await writeFixtureFork(sourceRoot);
-  return sourceRoot;
-}
-
 function count(list, value) {
   return list.filter((item) => item === value).length;
 }
 
 test('installed fork is self-contained: runtime files copied, tests excluded, single index entry; upstream package entries removed and other settings preserved', async () => {
-  const sourceRoot = await buildSourceRoot();
+  const sourceRoot = await mkdtemp(path.join(tmpdir(), 'piastra-src-'));
   const agentDir = await mkdtemp(path.join(tmpdir(), 'piastra-agent-'));
   try {
+    for (const file of supportFiles) {
+      await mkdir(path.join(sourceRoot, path.dirname(file)), { recursive: true });
+      await cp(path.join(repoRoot, file), path.join(sourceRoot, file));
+    }
+    await writeFixtureFork(sourceRoot);
     const settings = {
       customSetting: true,
       unrelated: { nested: [1, 2, 3] },
@@ -204,9 +196,13 @@ test('installed fork is self-contained: runtime files copied, tests excluded, si
 });
 
 test('installer fails before saving settings when vendored fork is missing, leaving upstream settings unchanged', async () => {
-  const sourceRoot = await buildSourceRoot({ includeFork: false });
+  const sourceRoot = await mkdtemp(path.join(tmpdir(), 'piastra-src-'));
   const agentDir = await mkdtemp(path.join(tmpdir(), 'piastra-agent-'));
   try {
+    for (const file of supportFiles) {
+      await mkdir(path.join(sourceRoot, path.dirname(file)), { recursive: true });
+      await cp(path.join(repoRoot, file), path.join(sourceRoot, file));
+    }
     // No fork in the source tree for this fixture.
     const settings = {
       customSetting: true,
@@ -228,7 +224,6 @@ test('installer fails before saving settings when vendored fork is missing, leav
 });
 
 test('installer preserves packages and disables only upstream worktree extension', async () => {
-  const sourceRoot = await buildSourceRoot();
   const agentDir = await mkdtemp(path.join(tmpdir(), 'piastra-installer-'));
   try {
     const settings = {
@@ -237,7 +232,7 @@ test('installer preserves packages and disables only upstream worktree extension
       extensions: ['/existing/extension.ts'],
     };
     await writeFile(path.join(agentDir, 'settings.json'), JSON.stringify(settings));
-    await runInstaller(sourceRoot, agentDir);
+    await runInstaller(repoRoot, agentDir);
     const installed = JSON.parse(await readFile(path.join(agentDir, 'settings.json'), 'utf8'));
     assert.equal(installed.customSetting, true);
     assert.deepEqual(installed.packages, [
@@ -256,7 +251,6 @@ test('installer preserves packages and disables only upstream worktree extension
     const guard = await readFile(path.join(agentDir, 'piastra/package/extensions/piastra/guard.mjs'), 'utf8');
     assert.match(guard, /PIASTRA_WORKER_GUARD_CHANNEL/);
   } finally {
-    await rm(sourceRoot, { recursive: true, force: true });
     await rm(agentDir, { recursive: true, force: true });
   }
 });
