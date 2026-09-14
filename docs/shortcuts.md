@@ -26,11 +26,12 @@ the main editor is affected.
 | `Shift+Tab` | Cycle the primary PiAstra agents (orchestrator → general → fast → review) |
 | `Ctrl+T` | Native `app.thinking.cycle` (cycle the thinking level) |
 | `Ctrl+O` | Toggle tool output expansion — the compact-transcript plugin claims the toggle when compact mode is on; otherwise native `app.tools.expand` |
-| `Ctrl+X` | Arm the leader key for 2 seconds; a small hint (` x→ t y a w `) appears on the editor border |
+| `Ctrl+X` | Arm the leader key for 2 seconds; a small hint (` x→ t y a w m `) appears on the editor border |
 | `Ctrl+X` then `t` | Native `app.thinking.toggle` (collapse/expand thinking blocks) |
 | `Ctrl+X` then `y` | Native `app.message.copy` (copy last assistant message) |
 | `Ctrl+X` then `a` | PiAstra agent picker (same list as `/agent`) |
 | `Ctrl+X` then `w` | Worker overlay (same view as `/workers`) |
+| `Ctrl+X` then `m` | Native model picker (same as `Ctrl+L` / `/model`) |
 | `Ctrl+X` then `Esc` | Cancel the leader without aborting the agent |
 | `Ctrl+X` then other key | Disarm and fall through — the key does its normal thing |
 | `Ctrl+X` then `Ctrl+X` | Rearm; the 2-second timer restarts |
@@ -69,7 +70,8 @@ Errors from the action never escape input handling: they are surfaced through
 When pi installs a custom editor, `setCustomEditorComponent` copies the app's
 native action handlers into the editor's public `actionHandlers` map for any
 editor that duck-types as a `CustomEditor`. PiAstra's editor therefore invokes
-`app.thinking.cycle`, `app.thinking.toggle` and `app.message.copy` **by action
+`app.thinking.cycle`, `app.thinking.toggle`, `app.message.copy` and
+`app.model.select` **by action
 id** from that map — `Ctrl+T` and the leader `t` deliberately hit different
 action ids — instead of simulating raw keystrokes, so user keybinding
 customisations and future pi changes keep working. If an action id has no

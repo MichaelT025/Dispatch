@@ -45,6 +45,7 @@
  *   y                native app.message.copy
  *   a                PiAstra agent picker
  *   w                worker overlay
+ *   m                native app.model.select (model picker)
  *   Esc              cancel the leader without aborting
  *   other key        disarm and fall through normally
  *   Ctrl+X           rearm (timer restarts)
@@ -109,7 +110,7 @@ export function readEditorCapability(factory: unknown): CooperativeEditorCapabil
 }
 
 export const LEADER_TIMEOUT_MS = 2000;
-export const LEADER_HINT = ' x→ t y a w ';
+export const LEADER_HINT = ' x→ t y a w m ';
 
 /** Property marker on the installed factory so /reload replacements never nest. */
 export const EDITOR_FACTORY_BRAND = 'piastraShortcutsFactory';
@@ -196,6 +197,7 @@ export class PiastraEditor extends CustomEditor {
       this.disarmLeader();
       if (matchesKey(data, 't')) return this.invokeNative('app.thinking.toggle', data);
       if (matchesKey(data, 'y')) return this.invokeNative('app.message.copy', data);
+      if (matchesKey(data, 'm')) return this.invokeNative('app.model.select', data);
       if (matchesKey(data, 'a')) return this.runAction('openAgentPicker');
       if (matchesKey(data, 'w')) return this.runAction('openWorkers');
       // Unmatched key: disarm (done above) and fall through normally.

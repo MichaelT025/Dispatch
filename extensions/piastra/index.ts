@@ -142,7 +142,7 @@ export default function (pi: ExtensionAPI) {
   // Editor-scoped shortcuts (docs/shortcuts.md): Shift+Tab cycles agents,
   // Ctrl+T cycles thinking level, Ctrl+X arms a short leader where
   // t toggles thinking, y copies the last message, a opens this picker and
-  // w opens the worker overlay. Existing ctrl+shift+a/w aliases stay.
+  // w opens the worker overlay; m opens the model picker. Existing ctrl+shift+a/w aliases stay.
   installShortcuts(pi, {
     cycleAgents: ctx => attempt(() => agents.cycle(ctx), ctx),
     openAgentPicker: ctx => pickAgent('', ctx),
@@ -158,7 +158,7 @@ export default function (pi: ExtensionAPI) {
     description: 'Show PiAstra roles and delegation availability',
     handler: async (_args, ctx) => {
       const summary = agentOrder.map(name => { const value = agents.selection(name); return `${name}: ${value.model}${value.thinking ? ` (${value.thinking})` : ''}`; }).join('\n');
-      ctx.ui.notify(`Active: ${agents.active}\n${summary}\nCWD: ${ctx.cwd}\n/agent selects; Ctrl+Shift+A cycles.\nShortcuts: Shift+Tab cycles agents · Ctrl+T thinking · Ctrl+X then t/y/a/w.\nDelegate: uncapped parallel workers; Ctrl+O expands live activity.`, 'info');
+      ctx.ui.notify(`Active: ${agents.active}\n${summary}\nCWD: ${ctx.cwd}\n/agent selects; Ctrl+Shift+A cycles.\nShortcuts: Shift+Tab cycles agents · Ctrl+T thinking · Ctrl+X then t/y/a/w/m.\nDelegate: uncapped parallel workers; Ctrl+O expands live activity.`, 'info');
     }
   });
   pi.registerTool({

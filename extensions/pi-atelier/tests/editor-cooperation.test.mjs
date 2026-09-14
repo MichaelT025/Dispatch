@@ -223,6 +223,27 @@ describe("piastra/atelier editor cooperation", () => {
 		assert.equal(h.native.thinkCycle, 1);
 	});
 
+	it("leader m opens the native model picker with either editor startup order", async () => {
+		for (const atelierFirst of [false, true]) {
+			const h = makeHarness();
+			let selections = 0;
+			h.defaultEditor.actionHandlers.set("app.model.select", () => selections++);
+			const token = {};
+			if (atelierFirst) installAtelierEditor(h.ctx, token);
+			const pi = fakePi();
+			installShortcuts(pi, countingActions().actions);
+			await pi.emit("session_start", {}, h.ctx);
+			if (!atelierFirst) installAtelierEditor(h.ctx, token);
+			h.editor.handleInput(CTRL_X);
+			h.editor.handleInput("m");
+			assert.equal(selections, 1);
+			assert.equal(h.editor.isLeaderArmed, false);
+			assert.equal(h.editor.getText(), "");
+			assert.equal(frameCount(h.editor, 80), 1);
+			h.editor.dispose();
+		}
+	});
+
 	it("repeated atelier enable with the same token never nests frames", () => {
 		const h = makeHarness();
 		const token = {};

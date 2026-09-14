@@ -139,6 +139,31 @@ test('leader y copies via the native app.message.copy handler, a and w open PiAs
   assert.equal(calls.openWorkers, 1);
 });
 
+test('leader m opens the native model picker with legacy and Kitty keys; plain m still types', () => {
+  const editor = new PiastraEditor(tuiStub(), themeStub, keybindingsStub());
+  let selections = 0;
+  installNativeHandlers(editor, { 'app.model.select': () => selections++ });
+  editor.handleInput('m');
+  assert.equal(editor.getText(), 'm');
+  assert.equal(selections, 0);
+  for (const key of ['m', '\x1b[109;1:1u']) {
+    editor.handleInput(CTRL_X);
+    editor.handleInput(key);
+    assert.equal(editor.isLeaderArmed, false);
+    assert.equal(editor.getText(), 'm');
+  }
+  assert.equal(selections, 2);
+  assert.ok(LEADER_HINT.includes('m'));
+});
+
+test('leader m falls back to typing when the native model-picker handler is absent', () => {
+  const editor = new PiastraEditor(tuiStub(), themeStub, keybindingsStub());
+  editor.handleInput(CTRL_X);
+  editor.handleInput('m');
+  assert.equal(editor.getText(), 'm');
+  assert.equal(editor.isLeaderArmed, false);
+});
+
 test('escape cancels the leader without aborting the agent', () => {
   const { calls, actions } = countingActions();
   const editor = new PiastraEditor(tuiStub(), themeStub, keybindingsStub(), { actions });
