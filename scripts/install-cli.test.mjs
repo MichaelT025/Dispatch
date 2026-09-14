@@ -22,9 +22,15 @@ const supportFiles = [
   'extensions/piastra/sidebar.mjs',
   'extensions/piastra/worker-view.ts',
   'extensions/piastra/worker-render.ts',
+  'extensions/piastra/shortcuts.ts',
   'extensions/pi-ui/index.ts',
   'extensions/pi-worktree/git-worktree.ts',
   'extensions/pi-worktree/LICENSE',
+  'extensions/pi-compact-transcript/index.ts',
+  'extensions/pi-compact-transcript/extensions/compact-transcript.ts',
+  'extensions/pi-compact-transcript/package.json',
+  'extensions/pi-compact-transcript/LICENSE',
+  'extensions/pi-compact-transcript/README.md',
 ];
 
 function runInstaller(sourceRoot, agentDir) {
@@ -56,6 +62,13 @@ async function writeFixtureFork(root, { includeTests = true } = {}) {
     await writeFile(path.join(base, 'lib/state.test.mjs'), 'test("noop");\n');
     await mkdir(path.join(base, '__tests__'), { recursive: true });
     await writeFile(path.join(base, '__tests__/helper.mjs'), 'export const helper = 1;\n');
+  }
+  // Same shape for the compact-transcript fork: runtime files come from
+  // supportFiles; a test file here verifies test exclusion during the copy.
+  const compact = path.join(root, 'extensions', 'pi-compact-transcript');
+  await mkdir(path.join(compact, 'extensions'), { recursive: true });
+  if (includeTests) {
+    await writeFile(path.join(compact, 'compact-transcript.test.mjs'), 'test("noop");\n');
   }
 }
 
@@ -89,6 +102,11 @@ test('installed fork is self-contained: runtime files copied, tests excluded, si
         'npm:pi-queue-steer-factory@2.1.0',
         'git:github.com/user/pi-queue-steer-factory@main',
         'https://github.com/user/pi-queue-steer-factory',
+        'npm:pi-compact-transcript',
+        {
+          source: 'npm:pi-compact-transcript@0.10.1',
+          commands: [],
+        },
         {
           source: 'pi-queue-other-entry',
           skills: [],
@@ -120,6 +138,19 @@ test('installed fork is self-contained: runtime files copied, tests excluded, si
       { source: 'npm:@thisux/pi-worktree@1.2.0', extensions: [] },
     );
 
+    // The vendored compact-transcript fork replaces the upstream plugin: both
+    // the bare string and the versioned object are disabled via extensions: [],
+    // and the versioned object keeps its other fields.
+    assert.deepEqual(
+      installed.packages.find((p) => typeof p === 'object' && p?.source === 'npm:pi-compact-transcript'),
+      { source: 'npm:pi-compact-transcript', extensions: [] },
+    );
+    assert.deepEqual(
+      installed.packages.find((p) => typeof p === 'object' && p?.source === 'npm:pi-compact-transcript@0.10.1'),
+      { source: 'npm:pi-compact-transcript@0.10.1', commands: [], extensions: [] },
+    );
+    assert.equal(installed.packages.some((p) => typeof p === 'string' && /^npm:pi-compact-transcript/.test(p)), false);
+
     // Fork installed recursively: index, dependency, LICENSE, README present;
     // tests of any shape excluded; index registered exactly once.
     const installedPkg = path.join(agentDir, 'piastra/package/extensions/pi-queue');
@@ -133,11 +164,29 @@ test('installed fork is self-contained: runtime files copied, tests excluded, si
     assert.equal(existsSync(path.join(installedPkg, '__tests__')), false);
     assert.equal(count(installed.extensions, path.join(agentDir, 'piastra/package/extensions/pi-queue/index.ts')), 1);
 
+    // Compact-transcript fork installed recursively: index, extension module,
+    // package.json, LICENSE, README present; tests excluded; index registered
+    // exactly once.
+    const installedCompact = path.join(agentDir, 'piastra/package/extensions/pi-compact-transcript');
+    const compactIndexSource = await readFile(path.join(installedCompact, 'index.ts'), 'utf8');
+    assert.match(compactIndexSource, /compact-transcript\.ts/);
+    await readFile(path.join(installedCompact, 'extensions/compact-transcript.ts'), 'utf8');
+    await readFile(path.join(installedCompact, 'package.json'), 'utf8');
+    await readFile(path.join(installedCompact, 'LICENSE'), 'utf8');
+    await readFile(path.join(installedCompact, 'README.md'), 'utf8');
+    assert.equal(existsSync(path.join(installedCompact, 'compact-transcript.test.mjs')), false);
+    assert.equal(count(installed.extensions, path.join(agentDir, 'piastra/package/extensions/pi-compact-transcript/index.ts')), 1);
+
+    // The piastra shortcuts module ships with the managed copy.
+    const shortcuts = await readFile(path.join(agentDir, 'piastra/package/extensions/piastra/shortcuts.ts'), 'utf8');
+    assert.match(shortcuts, /piastra:compact-transcript:toggle/);
+
     // Stale development entries are gone.
     for (const entry of installed.extensions) {
       assert.doesNotMatch(entry, /\.\.[\\/]/);
       assert.notEqual(entry, path.join(sourceRoot, 'extensions/pi-queue/index.ts'));
       assert.notEqual(entry, path.join(sourceRoot, 'extensions/piastra/index.ts'));
+      assert.notEqual(entry, path.join(sourceRoot, 'extensions/pi-compact-transcript/index.ts'));
     }
 
     // Idempotence: rerunning keeps the same extension set (single queue index)
@@ -146,6 +195,7 @@ test('installed fork is self-contained: runtime files copied, tests excluded, si
     const rerun = JSON.parse(await readFile(path.join(agentDir, 'settings.json'), 'utf8'));
     assert.deepEqual(rerun.extensions, installed.extensions);
     assert.equal(count(rerun.extensions, path.join(agentDir, 'piastra/package/extensions/pi-queue/index.ts')), 1);
+    assert.equal(count(rerun.extensions, path.join(agentDir, 'piastra/package/extensions/pi-compact-transcript/index.ts')), 1);
     assert.deepEqual(rerun.packages, installed.packages);
   } finally {
     await rm(sourceRoot, { recursive: true, force: true });
@@ -195,7 +245,12 @@ test('installer preserves packages and disables only upstream worktree extension
       { source: 'npm:@thisux/pi-worktree@1.2.0', extensions: [] },
     ]);
     assert.match(installed.extensions.join('\n'), /extensions[\\/]pi-worktree[\\/]git-worktree\.ts/);
+    // The vendored compact-transcript fork is registered from the installed copy.
+    assert.match(installed.extensions.join('\n'), /extensions[\\/]pi-compact-transcript[\\/]index\.ts/);
     await readFile(path.join(agentDir, 'piastra/package/extensions/pi-worktree/LICENSE'), 'utf8');
+    // The piastra shortcuts module ships with the managed copy.
+    const shortcuts = await readFile(path.join(agentDir, 'piastra/package/extensions/piastra/shortcuts.ts'), 'utf8');
+    assert.match(shortcuts, /piastra:compact-transcript:toggle/);
     // The worker guard helper is part of the managed copy; index.ts imports it
     // at runtime, so a missing file would break the installed extension.
     const guard = await readFile(path.join(agentDir, 'piastra/package/extensions/piastra/guard.mjs'), 'utf8');

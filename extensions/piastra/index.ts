@@ -14,6 +14,7 @@ import { createWorkerProgress } from './worker-render.ts';
 import { agentOrder, createAgents } from './agents.mjs';
 import { createWorkerSidebar } from './sidebar.mjs';
 import { createSessionPhaseGuard, finalizeOutstandingWorkers, registerWorkerGuard, sessionPhaseGuardMessage, settleWorkerBatch, workerGuardMessage } from './guard.mjs';
+import { installShortcuts } from './shortcuts.ts';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const config = JSON.parse(readFileSync(path.join(root, 'config/agents.json'), 'utf8'));
@@ -120,15 +121,26 @@ export default function (pi: ExtensionAPI) {
   pi.on('session_tree', async (_event, ctx) => attempt(() => agents.restore(ctx), ctx));
   pi.on('model_select', event => agents.modelChanged(event));
   pi.on('thinking_level_select', event => agents.thinkingChanged(event));
+  // Shared between /agent and the editor shortcuts' agent picker.
+  const pickAgent = async (args: string, ctx: any) => {
+    const role = args.trim().toLowerCase() || (ctx.hasUI ? await ctx.ui.select(`Agent: ${agents.active}`, agentOrder) : undefined);
+    if (role) await attempt(() => agents.select(role, ctx), ctx);
+    else if (!ctx.hasUI) ctx.ui.notify(`Active: ${agents.active}. Use /agent ${agentOrder.join('|')}`, 'info');
+  };
   pi.registerCommand('agent', {
     description: 'Select PiAstra agent: orchestrator, general, fast, review',
-    handler: async (args, ctx) => {
-      const role = args.trim().toLowerCase() || (ctx.hasUI ? await ctx.ui.select(`Agent: ${agents.active}`, agentOrder) : undefined);
-      if (role) await attempt(() => agents.select(role, ctx), ctx);
-      else if (!ctx.hasUI) ctx.ui.notify(`Active: ${agents.active}. Use /agent ${agentOrder.join('|')}`, 'info');
-    }
+    handler: async (args, ctx) => pickAgent(args, ctx)
   });
   pi.registerShortcut('ctrl+shift+a', { description: 'Cycle PiAstra agent', handler: async ctx => attempt(() => agents.cycle(ctx), ctx) });
+  // Editor-scoped shortcuts (docs/shortcuts.md): Shift+Tab cycles agents,
+  // Ctrl+T cycles thinking level, Ctrl+X arms a short leader where
+  // t toggles thinking, y copies the last message, a opens this picker and
+  // w opens the worker overlay. Existing ctrl+shift+a/w aliases stay.
+  installShortcuts(pi, {
+    cycleAgents: ctx => attempt(() => agents.cycle(ctx), ctx),
+    openAgentPicker: ctx => pickAgent('', ctx),
+    openWorkers: ctx => attempt(() => openWorkers(ctx), ctx),
+  });
   pi.on('before_agent_start', async event => {
     const instructions = agents.active === 'orchestrator'
       ? 'Use delegate for bounded tasks. Choose as many concurrent workers as the task needs, including editing workers. Coordinate file ownership and dependencies to avoid conflicting edits; there is no worker-count cap or batch queue. Workers receive only the task you supply, plus project instructions, never the parent conversation. Include requirements, useful paths, and the exact milestone Git baseline for reviews. Keep a review target stable while it is inspected. Worker read access excludes shell, write and edit; it includes inspect_git and fetch_url. For test execution use a write-capable general worker. Full worker transcripts are saved outside the project. Do not read them unless the concise result is insufficient.'
@@ -139,7 +151,7 @@ export default function (pi: ExtensionAPI) {
     description: 'Show PiAstra roles and delegation availability',
     handler: async (_args, ctx) => {
       const summary = agentOrder.map(name => { const value = agents.selection(name); return `${name}: ${value.model}${value.thinking ? ` (${value.thinking})` : ''}`; }).join('\n');
-      ctx.ui.notify(`Active: ${agents.active}\n${summary}\nCWD: ${ctx.cwd}\n/agent selects; Ctrl+Shift+A cycles.\nDelegate: uncapped parallel workers; Ctrl+O expands live activity.`, 'info');
+      ctx.ui.notify(`Active: ${agents.active}\n${summary}\nCWD: ${ctx.cwd}\n/agent selects; Ctrl+Shift+A cycles.\nShortcuts: Shift+Tab cycles agents · Ctrl+T thinking · Ctrl+X then t/y/a/w.\nDelegate: uncapped parallel workers; Ctrl+O expands live activity.`, 'info');
     }
   });
   pi.registerTool({

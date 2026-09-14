@@ -14,7 +14,7 @@ try {
 } catch (error) { if (error.code !== 'ENOENT') throw error; }
 const installed = path.join(agentDir, 'piastra', 'package');
 for (const dir of ['extensions/piastra', 'extensions/pi-ui', 'extensions/pi-worktree', 'config', 'roles']) await mkdir(path.join(installed, dir), { recursive: true });
-for (const file of ['extensions/piastra/index.ts', 'extensions/piastra/policy.mjs', 'extensions/piastra/agents.mjs', 'extensions/piastra/guard.mjs', 'extensions/piastra/progress.mjs', 'extensions/piastra/sidebar.mjs', 'extensions/piastra/worker-view.ts', 'extensions/piastra/worker-render.ts', 'extensions/pi-worktree/git-worktree.ts', 'extensions/pi-worktree/LICENSE', 'config/agents.json', ...['orchestrator', 'general', 'fast', 'review'].map(role => `roles/${role}.md`)]) {
+for (const file of ['extensions/piastra/index.ts', 'extensions/piastra/policy.mjs', 'extensions/piastra/agents.mjs', 'extensions/piastra/guard.mjs', 'extensions/piastra/progress.mjs', 'extensions/piastra/sidebar.mjs', 'extensions/piastra/worker-view.ts', 'extensions/piastra/worker-render.ts', 'extensions/piastra/shortcuts.ts', 'extensions/pi-worktree/git-worktree.ts', 'extensions/pi-worktree/LICENSE', 'config/agents.json', ...['orchestrator', 'general', 'fast', 'review'].map(role => `roles/${role}.md`)]) {
   await copyFile(path.join(root, file), path.join(installed, file));
 }
 await writeFile(path.join(installed, 'package.json'), JSON.stringify({ name: 'piastra-user-extension', private: true, type: 'module' }) + '\n');
@@ -37,13 +37,20 @@ const queueIndex = path.join(queueTarget, 'index.ts');
 const vendoredRuntimeFilter = (source) =>
   !/(^|[\\/])__tests__([\\/]|$)/.test(source) && !/\.test\.[a-z]+$|\.spec\.[a-z]+$/i.test(source);
 await cp(queueSource, queueTarget, { recursive: true, force: true, filter: vendoredRuntimeFilter });
+// Vendor the compact-transcript fork runtime files the same way: extension
+// index + dependencies + LICENSE/README/package.json, tests excluded.
+const compactSource = path.join(root, 'extensions', 'pi-compact-transcript');
+const compactTarget = path.join(installed, 'extensions', 'pi-compact-transcript');
+const compactIndex = path.join(compactTarget, 'index.ts');
+await cp(compactSource, compactTarget, { recursive: true, force: true, filter: vendoredRuntimeFilter });
 const extension = path.join(installed, 'extensions', 'piastra', 'index.ts');
 const worktreeExtension = path.join(installed, 'extensions', 'pi-worktree', 'git-worktree.ts');
 const developmentPath = path.join(root, 'extensions', 'piastra', 'index.ts');
 const developmentQueuePath = path.join(root, 'extensions', 'pi-queue', 'index.ts');
-const installedExtensions = [extension, path.join(installed, 'extensions/pi-ui/index.ts'), worktreeExtension, queueIndex];
+const developmentCompactPath = path.join(root, 'extensions', 'pi-compact-transcript', 'index.ts');
+const installedExtensions = [extension, path.join(installed, 'extensions/pi-ui/index.ts'), worktreeExtension, queueIndex, compactIndex];
 settings.extensions = [...new Set([
-  ...(settings.extensions || []).filter((p) => p !== developmentPath && p !== developmentQueuePath),
+  ...(settings.extensions || []).filter((p) => p !== developmentPath && p !== developmentQueuePath && p !== developmentCompactPath),
   ...installedExtensions,
 ])];
 // The upstream package remains installed for updates and its commands/docs, but
@@ -62,6 +69,17 @@ const upstreamQueue = /^(?:npm:pi-queue-steer-factory(?:@[\w.~^>-]*)?|git:[^\s]*
 settings.packages = (settings.packages || []).filter((entry) => {
   const source = typeof entry === 'string' ? entry : entry?.source;
   return !upstreamQueue.test(source || '');
+});
+// The vendored compact-transcript fork replaces the upstream plugin: keep the
+// package installed (updates, commands/docs) but disable its extension (bare
+// or versioned, string or object form) so only the managed copy loads.
+const upstreamCompact = /^npm:pi-compact-transcript(?:@[\w.~^>-]*)?$/i;
+settings.packages = (settings.packages || []).map((entry) => {
+  const source = typeof entry === 'string' ? entry : entry?.source;
+  if (upstreamCompact.test(source || '')) {
+    return { ...(typeof entry === 'string' ? { source: entry } : entry), extensions: [] };
+  }
+  return entry;
 });
 const config = JSON.parse(await readFile(path.join(root, 'config/agents.json'), 'utf8')).orchestrator;
 const slash = config.model.indexOf('/');
