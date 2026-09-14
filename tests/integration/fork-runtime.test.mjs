@@ -7,11 +7,35 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { forkArtifactErrors } from '../../scripts/start-fork.mjs';
 
+// tests/integration/fork-runtime.test.mjs lives two levels below the repo root.
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
-const forkRoot = resolve(process.env.PIASTRA_FORK_DIR || join(root, '..', 'PiAstra-web-ui'));
+const defaultForkRoot = join(root, '..', 'PiAstra-web-ui');
+const forkRoot = resolve(process.env.PIASTRA_FORK_DIR || defaultForkRoot);
 const sdkEntry = join(forkRoot, 'node_modules', '@earendil-works', 'pi-coding-agent', 'dist', 'index.js');
-// Integration is only meaningful when the fork checkout and its SDK are present.
-const ready = existsSync(sdkEntry) && forkArtifactErrors(forkRoot).length === 0;
+
+/**
+ * This is an explicit, opt-in integration test (`npm run test:integration`).
+ * Unlike the offline unit suites it must not silently skip when the sibling
+ * fork checkout is unavailable: missing fork artifacts or SDK are a hard
+ * failure with setup instructions. The session it creates is fully synthetic
+ * (temporary agent dir, in-memory session files) and makes no provider
+ * network calls.
+ */
+function assertForkReady() {
+  const missing = [
+    ...forkArtifactErrors(forkRoot),
+    ...(existsSync(sdkEntry) ? [] : [sdkEntry]),
+  ];
+  if (missing.length === 0) return;
+  assert.fail(
+    'Fork integration test cannot run: the sibling PiAstra fork checkout is not built.\n' +
+    `Fork root: ${forkRoot}\n` +
+    `Missing: ${missing.join(', ')}\n` +
+    'Set up and build the fork checkout, then re-run `npm run test:integration`:\n' +
+    `  cd ${forkRoot} && npm ci && npm run build\n` +
+    `(Override the checkout location with PIASTRA_FORK_DIR; default: ${defaultForkRoot})\n`,
+  );
+}
 
 /**
  * Fully temporary isolated agent dir: a settings.json referencing the repo
@@ -38,7 +62,8 @@ async function makeSyntheticAgentDir() {
   return agentDir;
 }
 
-test('fork SDK sessions load the PiAstra extension with only the delegate tool as delegation', { skip: !ready && 'fork checkout or build artifacts missing' }, async () => {
+test('fork SDK sessions load the PiAstra extension with only the delegate tool as delegation', async () => {
+  assertForkReady();
   const agentDir = await makeSyntheticAgentDir();
   const sdk = await import(pathToFileURL(sdkEntry).href);
   const services = await sdk.createAgentSessionServices({ cwd: root, agentDir });

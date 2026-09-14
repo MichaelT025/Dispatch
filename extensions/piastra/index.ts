@@ -12,6 +12,7 @@ import { Text } from '@earendil-works/pi-tui';
 import { createWorkerView, workerOverlayOptions } from './worker-view.ts';
 import { createWorkerProgress } from './worker-render.ts';
 import { agentOrder, createAgents } from './agents.mjs';
+import { createFilePrefsStore } from './prefs.mjs';
 import { createWorkerSidebar } from './sidebar.mjs';
 import { createSessionPhaseGuard, finalizeOutstandingWorkers, registerWorkerGuard, sessionPhaseGuardMessage, settleWorkerBatch, workerGuardMessage } from './guard.mjs';
 import { installShortcuts } from './shortcuts.ts';
@@ -52,7 +53,10 @@ function inspectTools(cwd: string) {
 
 export default function (pi: ExtensionAPI) {
   let runtime: Promise<ModelRuntime> | undefined;
-  const agents = createAgents(pi, config);
+  // Cross-session role preferences live next to PiAstra run data. Unit tests
+  // inject their own store; runtimes persist to <agentDir>/piastra/agents.json.
+  const store = createFilePrefsStore(path.join(getAgentDir(), 'piastra', 'agents.json'));
+  const agents = createAgents(pi, config, store);
   const workerViews = new Map<number, any>();
   const sidebar = createWorkerSidebar(pi.events, workerViews);
   const sessionPhases = createSessionPhaseGuard();
@@ -119,8 +123,8 @@ export default function (pi: ExtensionAPI) {
   for (const tool of inspectTools('')) pi.registerTool({ ...tool, execute: (id: string, params: any, signal: any, _update: any, ctx: any) => inspectTools(ctx.cwd).find(t => t.name === tool.name)!.execute(id, params, signal) });
   pi.on('session_start', async (_event, ctx) => attempt(() => agents.restore(ctx), ctx));
   pi.on('session_tree', async (_event, ctx) => attempt(() => agents.restore(ctx), ctx));
-  pi.on('model_select', event => agents.modelChanged(event));
-  pi.on('thinking_level_select', event => agents.thinkingChanged(event));
+  pi.on('model_select', (event, ctx) => agents.modelChanged(event, ctx));
+  pi.on('thinking_level_select', (event, ctx) => agents.thinkingChanged(event, ctx));
   // Shared between /agent and the editor shortcuts' agent picker.
   const pickAgent = async (args: string, ctx: any) => {
     const role = args.trim().toLowerCase() || (ctx.hasUI ? await ctx.ui.select(`Agent: ${agents.active}`, agentOrder) : undefined);
@@ -143,7 +147,7 @@ export default function (pi: ExtensionAPI) {
   });
   pi.on('before_agent_start', async event => {
     const instructions = agents.active === 'orchestrator'
-      ? 'Use delegate for bounded tasks. Choose as many concurrent workers as the task needs, including editing workers. Coordinate file ownership and dependencies to avoid conflicting edits; there is no worker-count cap or batch queue. Workers receive only the task you supply, plus project instructions, never the parent conversation. Include requirements, useful paths, and the exact milestone Git baseline for reviews. Keep a review target stable while it is inspected. Worker read access excludes shell, write and edit; it includes inspect_git and fetch_url. For test execution use a write-capable general worker. Full worker transcripts are saved outside the project. Do not read them unless the concise result is insufficient.'
+      ? 'Use delegate for bounded tasks. Choose as many concurrent workers as the task needs, including editing workers. Coordinate file ownership and dependencies to avoid conflicting edits; there is no worker-count cap or batch queue. Workers receive only the task you supply, plus project instructions, never the parent conversation. Include requirements, useful paths, and the exact milestone Git baseline for reviews. Keep a review target stable while it is inspected. Worker read access excludes shell, write and edit; it includes inspect_git and fetch_url. Run checks yourself or use a write-capable worker. Full worker transcripts are saved outside the project. Do not read them unless the concise result is insufficient.'
       : 'You are the directly selected main agent, working with the user in this conversation. Treat the current user request as your task. Answer the user directly; do not wait for an orchestrator or delegate to other agents. Earlier conversation may come from other roles; follow your current role and tool permissions.';
     return { systemPrompt: `${event.systemPrompt}\n\nActive PiAstra agent: ${agents.active}\n${rolePrompt(agents.active)}\n${instructions}` };
   });

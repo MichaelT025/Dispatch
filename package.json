@@ -15,13 +15,16 @@
     "start:agegr": "node scripts/start-agegr.mjs",
     "start:tau": "node scripts/start-tau.mjs",
     "install:cli": "node scripts/install-cli.mjs",
-    "test:cli": "node --experimental-strip-types --test extensions/piastra/*.test.mjs extensions/pi-worktree/*.test.mjs extensions/pi-queue/*.test.mjs extensions/pi-compact-transcript/*.test.mjs scripts/install-cli.test.mjs",
-    "test:fork": "node --experimental-strip-types --test extensions/piastra/*.test.mjs scripts/start-fork.test.mjs"
+    "test": "node --experimental-strip-types --test \"extensions/piastra/*.test.mjs\" \"extensions/pi-worktree/*.test.mjs\" \"extensions/pi-queue/*.test.mjs\" \"extensions/pi-compact-transcript/*.test.mjs\" \"scripts/*.test.mjs\"",
+    "test:cli": "node --experimental-strip-types --test \"extensions/piastra/*.test.mjs\" \"extensions/pi-worktree/*.test.mjs\" \"extensions/pi-queue/*.test.mjs\" \"extensions/pi-compact-transcript/*.test.mjs\" \"scripts/install-cli.test.mjs\"",
+    "test:fork": "npm test",
+    "test:integration": "node --experimental-strip-types --test tests/integration/fork-runtime.test.mjs"
   },
   "dependencies": {
     "@agegr/pi-web": "0.9.1",
     "@earendil-works/pi-coding-agent": "0.84.4",
     "pi-web-ui": "0.80.0",
+    "proper-lockfile": "^4.1.2",
     "tau-mirror": "1.0.9"
   },
   "overrides": {

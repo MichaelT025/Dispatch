@@ -11,7 +11,9 @@ Upstream/in-framework subagent tools are hard-blocked in PiAstra sessions so `de
 
 The installer also adds lightweight syntax highlighting for edit results. For the optional Atelier sidebar with PiAstra workers and TODOs, installation commands, controls, and performance notes, see [Pi CLI appearance and sidebar](docs/pi-ui.md).
 
-**Experiment with models:** select a role with **Ctrl+Shift+A** or `/agent`, then choose a model with **Ctrl+L** (or cycle models with Ctrl+P). **Shift+Tab** changes reasoning. PiAstra remembers these choices per role in the current session, restores them on resume, and uses them for future delegated workers of that role. Running workers keep their launch settings. `/piastra` shows the current choices. A new session starts from `config/agents.json`; these overrides do not change other sessions or the configuration file.
+**Experiment with models:** select a role with **Ctrl+Shift+A** or `/agent`, then choose a model with **Ctrl+L** (or cycle models with Ctrl+P). **Ctrl+T** cycles reasoning and **Shift+Tab** cycles agents; see [PiAstra editor shortcuts](docs/shortcuts.md) for the full leader-key map. PiAstra remembers these choices per role in the current session, restores them on resume, and uses them for future delegated workers of that role. Running workers keep their launch settings. `/piastra` shows the current choices.
+
+Explicit role overrides (a model or reasoning change while the role is active) are also remembered across sessions in `~/.pi/agent/piastra/agents.json` under `PI_CODING_AGENT_DIR` when set. On the next session they seed the same role; role switching, restore and tree navigation only reapply known choices and never rewrite that file. A session's later branch choice still wins over the stored override for that session, and a new session starts from the branch-free defaults plus stored overrides, never modifying `config/agents.json`. Saving a change for one role never discards overrides other roles hold on disk; a failed write shows an error notice while the in-session choice stays active. Invalid or unreadable entries are ignored and self-heal on the next saved change. To forget a stored override, edit or delete that role's entry in the file; it is shared across all projects because roles are global.
 
 Only the orchestrator can delegate. General and fast are directly usable coding agents; review has read-only inspection tools. Delegated workers still use fresh isolated contexts regardless of manual switching.
 
@@ -48,7 +50,7 @@ The main delegation card also shows each worker's current tool, target file/comm
 
 Read-only workers have read/find/grep/ls, an argument-restricted Git inspector and URL fetching. They have no shell, edit, write, extensions or nested delegation. General/fast workers with write access also have shell/edit/write and can run tests. Git review accepts a supplied milestone baseline; reviews do not execute tests. These are tool restrictions, not an OS filesystem sandbox. Worker transcripts are saved in `~/.pi/agent/piastra/runs`; the parent receives a capped summary and transcript path. Cancellation propagates to workers, with a 15-minute per-worker timeout. Model errors are returned explicitly, never replaced with Astra. Non-Astra workers request thinking off; Pi clamps this to model-supported levels (GLM currently uses Low).
 
-Validation: `npm run test:cli` checks dispatch policy, worker navigation/progress and Git argument restrictions, worker guard release after failed initialization and all-settled batch failure, compaction/branch-summary phase guarding, managed worktree installation, and worktree fresh-session switching (empty and nonempty sources, add/open/bare selector/ls paths, same-cwd reopen, recovery notice, busy/compaction/worker guards, PR guard before the first fetch, verified PR-specific refs/branches and collision/fetch-failure regressions using local Git repositories, worktree kept after refused/cancelled/failed switches, cancellation and failure handling, host trust forwarding, path spaces, non-interactive no-op) without model requests. `node scripts/smoke-cli.mjs` is an opt-in live test that consumes provider usage, creates a temporary Git project, and exercises a general edit, parallel fast helpers and independent review. Its local transcript is in `.local/cli-smoke.jsonl`.
+Validation: `npm test` runs the offline extension and launcher unit tests across the piastra, worktree, queue and compact-transcript plugins; `npm run test:cli` runs the same extension suites plus the installer test. Together they cover dispatch policy, worker navigation/progress and Git argument restrictions, worker guard release after failed initialization and all-settled batch failure, compaction/branch-summary phase guarding, managed worktree installation and fresh-session switching, verified PR-specific refs/branches and collision/fetch-failure regressions using local Git repositories, acknowledged queue delivery, and compact assistant status rendering — all without model requests. See [Contributing and CI](#contributing-and-ci) for the required checks and separate integration tests. `node scripts/smoke-cli.mjs` is an opt-in live test that consumes provider usage, creates a temporary Git project, and exercises a general edit, parallel fast helpers and independent review. Its local transcript is in `.local/cli-smoke.jsonl`.
 
 To uninstall, remove the PiAstra entry from the `extensions` array in your Pi settings and restore your preferred model defaults from the timestamped settings backup. Installed files and worker transcripts can remain until you choose to remove them.
 
@@ -107,6 +109,25 @@ Open http://127.0.0.1:8787. To use another workspace: `node scripts/start.mjs /p
 Setup seeds missing settings and preserves existing files. `--import-auth` copies existing Pi credentials from `PI_CODING_AGENT_DIR` or `~/.pi/agent` only if local credentials do not exist. The copy, sessions, and web UI state stay in ignored `.local/`; existing Pi settings are not modified. This is a separate credential copy, so subsequent sign-in/refresh state is independent. The doctor command checks credential presence, not validity, and never prints secrets.
 
 If no credentials are available, sign in with the installed Pi CLI using `.local/agent` as `PI_CODING_AGENT_DIR`. Subscription availability must be verified before model calls. Normal conversations in the setup preview use Astra Low and consume allowance; the setup smoke check itself sends no model requests.
+
+## Contributing and CI
+
+Before opening a PR, run:
+
+```sh
+npm ci
+npm test
+```
+
+[CI](.github/workflows/ci.yml) runs on every PR and pushes to `main`, with no path filters. It checks Linux on Node 22.19.0 (the declared minimum) and Node 24, plus Windows on Node 22. Each job installs from the lockfile and runs the offline tests without credentials, provider calls, or a sibling checkout. npm downloads are cached; `node_modules` is not. Superseded runs are cancelled, and jobs time out after 15 minutes. The workflow can also be dispatched manually.
+
+`npm run test:fork` remains an alias for `npm test`. Fork SDK integration is separate: build the sibling `../PiAstra-web-ui` checkout (or set `PIASTRA_FORK_DIR`), then run `npm run test:integration`. It uses synthetic credentials and makes no provider requests, but deliberately fails with setup instructions when the required fork artifacts or SDK are missing. It is not a required CI check. The paid, credential-dependent `node scripts/smoke-cli.mjs` also remains manual. Lint/format migrations and blocking dependency audits are not part of this initial gate.
+
+After the first green GitHub run, configure the `main` branch ruleset to require PRs and these status checks before merging (this is a GitHub setting, not enabled by the workflow file):
+
+- `Tests (ubuntu-latest, Node 22.19.0)`
+- `Tests (windows-latest, Node 22)`
+- `Tests (ubuntu-latest, Node 24)`
 
 ## Fork UI status
 
