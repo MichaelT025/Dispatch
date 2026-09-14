@@ -52,6 +52,25 @@ function fakeCtx(notices) {
   };
 }
 
+test('/wt shares the worktree handler and argument completions', async () => {
+  const { pi, commands } = fakePi(undefined);
+  worktreeExtension(pi);
+  const worktree = commands.get('worktree');
+  const alias = commands.get('wt');
+
+  assert.ok(alias);
+  assert.equal(alias.handler, worktree.handler);
+  assert.equal(alias.getArgumentCompletions, worktree.getArgumentCompletions);
+  assert.deepEqual(alias.getArgumentCompletions(''),
+    ['ls', 'add', 'open', 'rm', 'pr', 'help'].map((value) => ({ value, label: value })));
+  assert.deepEqual(alias.getArgumentCompletions('a'), [{ value: 'add', label: 'add' }]);
+  assert.equal(alias.getArgumentCompletions('add feat/example'), null);
+
+  const notices = [];
+  await alias.handler('help', fakeCtx(notices));
+  assert.match(notices[0].message, /\/wt is an alias for \/worktree/);
+});
+
 test('branch slugs are safe for Windows directory names', () => {
   assert.equal(branchSlug('Feature/Windows: names?'), 'feature-windows-names');
   assert.equal(branchSlug('refs/heads/Fix\\login'), 'fix-login');

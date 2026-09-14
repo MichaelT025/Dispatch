@@ -1,7 +1,7 @@
 /**
  * Git Worktree Extension
  *
- * Slash commands:
+ * Slash commands (/wt is an alias for /worktree):
  *   /worktree                      list worktrees (interactive pick)
  *   /worktree ls                   list worktrees
  *   /worktree <branch>             create worktree for branch
@@ -939,7 +939,7 @@ function parseArgs(raw: string): { cmd: string; rest: string } {
 }
 
 export default function (pi: ExtensionAPI) {
-	pi.registerCommand("worktree", {
+	const command: Parameters<ExtensionAPI["registerCommand"]>[1] = {
 		description:
 			"Create, list, open, or remove git worktrees (/worktree, /worktree ls|add|open|rm|pr)",
 		getArgumentCompletions: (prefix) => {
@@ -962,6 +962,7 @@ export default function (pi: ExtensionAPI) {
 				case "help": {
 					ctx.ui.notify(
 						[
+							"/wt is an alias for /worktree (all subcommands)",
 							"/worktree                 list + pick (fresh session there)",
 							"/worktree ls              list",
 							"/worktree <branch>        create + fresh session there",
@@ -1016,5 +1017,7 @@ export default function (pi: ExtensionAPI) {
 				}
 			}
 		},
-	});
+	};
+	pi.registerCommand("worktree", command);
+	pi.registerCommand("wt", { ...command, description: "Alias for /worktree" });
 }
