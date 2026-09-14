@@ -12,6 +12,7 @@ import { Text } from '@earendil-works/pi-tui';
 import { createWorkerView, workerOverlayOptions } from './worker-view.ts';
 import { createWorkerProgress } from './worker-render.ts';
 import { agentOrder, createAgents } from './agents.mjs';
+import { createFilePrefsStore } from './prefs.mjs';
 import { createWorkerSidebar } from './sidebar.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
@@ -50,7 +51,10 @@ function inspectTools(cwd: string) {
 
 export default function (pi: ExtensionAPI) {
   let runtime: Promise<ModelRuntime> | undefined;
-  const agents = createAgents(pi, config);
+  // Cross-session role preferences live next to PiAstra run data. Unit tests
+  // inject their own store; runtimes persist to <agentDir>/piastra/agents.json.
+  const store = createFilePrefsStore(path.join(getAgentDir(), 'piastra', 'agents.json'));
+  const agents = createAgents(pi, config, store);
   const workerViews = new Map<number, any>();
   const sidebar = createWorkerSidebar(pi.events, workerViews);
   pi.on('session_shutdown', async () => sidebar.dispose());
@@ -94,8 +98,8 @@ export default function (pi: ExtensionAPI) {
   for (const tool of inspectTools('')) pi.registerTool({ ...tool, execute: (id: string, params: any, signal: any, _update: any, ctx: any) => inspectTools(ctx.cwd).find(t => t.name === tool.name)!.execute(id, params, signal) });
   pi.on('session_start', async (_event, ctx) => attempt(() => agents.restore(ctx), ctx));
   pi.on('session_tree', async (_event, ctx) => attempt(() => agents.restore(ctx), ctx));
-  pi.on('model_select', event => agents.modelChanged(event));
-  pi.on('thinking_level_select', event => agents.thinkingChanged(event));
+  pi.on('model_select', (event, ctx) => agents.modelChanged(event, ctx));
+  pi.on('thinking_level_select', (event, ctx) => agents.thinkingChanged(event, ctx));
   pi.registerCommand('agent', {
     description: 'Select PiAstra agent: orchestrator, general, fast, review',
     handler: async (args, ctx) => {

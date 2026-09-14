@@ -1,3 +1,5 @@
+import { validateRoleEntry } from './prefs.mjs';
+
 export const agentOrder = ['orchestrator', 'general', 'fast', 'review'];
 const readTools = ['read', 'grep', 'find', 'ls', 'inspect_git', 'fetch_url'];
 const writeTools = ['bash', 'edit', 'write'];
@@ -16,24 +18,41 @@ export function agentTools(role) {
   return [...readTools, ...writeTools];
 }
 
-export function createAgents(pi, config) {
+export function createAgents(pi, config, store) {
   let active = 'orchestrator';
   let switching = false;
   const defaults = () => Object.fromEntries(agentOrder.map(role => [role, { ...config[role] }]));
   let selections = defaults();
   const save = () => pi.appendEntry('piastra-agent', { role: active, selections: structuredClone(selections) });
+  // Writes an explicitly changed role to the optional cross-session store.
+  // Switching agents or restoring only reapplies known selections, so the
+  // gained value never differs from what the role already had and is not
+  // persisted (that would, for example, roll a branch back to stale prefs).
+  const persist = (previousModel, previousThinking, ctx) => {
+    if (!store) return;
+    if (selections[active].model === previousModel && selections[active].thinking === previousThinking) return;
+    // Capture the role now: the write is async, and switching agents while it
+    // is still pending must not mislabel the failure notice with the new role.
+    const role = active;
+    store.save(role, selections[role]).catch(error =>
+      ctx?.ui?.notify?.(`PiAstra could not remember ${role} agent preferences: ${error.message}`, 'error'));
+  };
   return {
     get active() { return active; },
     selection(role) { return { ...selections[role] }; },
-    modelChanged(event) {
+    modelChanged(event, ctx) {
       if (switching || event.source === 'restore') return;
+      const previous = { model: selections[active].model, thinking: selections[active].thinking };
       selections[active] = { model: `${event.model.provider}/${event.model.id}`, thinking: pi.getThinkingLevel() };
       save();
+      persist(previous.model, previous.thinking, ctx);
     },
-    thinkingChanged(event) {
+    thinkingChanged(event, ctx) {
       if (switching) return;
+      const previous = { model: selections[active].model, thinking: selections[active].thinking };
       selections[active] = { ...selections[active], thinking: event.level };
       save();
+      persist(previous.model, previous.thinking, ctx);
     },
     async select(role, ctx, persist = true) {
       if (!agentOrder.includes(role)) throw new Error(`Unknown agent. Choose ${agentOrder.join(', ')}.`);
@@ -57,11 +76,15 @@ export function createAgents(pi, config) {
     async restore(ctx) {
       const saved = [...ctx.sessionManager.getBranch()].reverse().find(e => e.type === 'custom' && e.customType === 'piastra-agent');
       selections = defaults();
+      // Persisted user overrides are lower precedence than the session branch
+      // (branch selections win, active role stays branch scoped); they seed
+      // sessions without branch history. Restoring never writes the store.
+      let persisted = {};
+      if (store) { try { persisted = await store.load(); } catch { persisted = {}; } }
       for (const role of agentOrder) {
-        const choice = saved?.data?.selections?.[role];
-        if (typeof choice?.model === 'string' && choice.model.includes('/') &&
-          (choice.thinking === null || ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'].includes(choice.thinking))) {
-          selections[role] = { model: choice.model, thinking: choice.thinking };
+        for (const choice of [persisted[role], saved?.data?.selections?.[role]]) {
+          const valid = validateRoleEntry(choice);
+          if (valid) selections[role] = valid;
         }
       }
       await this.select(agentOrder.includes(saved?.data?.role) ? saved.data.role : 'orchestrator', ctx, false);
