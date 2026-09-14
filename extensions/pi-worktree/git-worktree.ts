@@ -8,7 +8,7 @@
  *   /worktree add <branch>         same as above
  *   /worktree open <branch>        start a fresh session in the worktree
  *   /worktree rm <branch>          remove worktree (confirms first)
- *   /worktree pr <number>          fetch PR branch via gh, create worktree
+ *   /worktree pr <number>          verify PR head, open piastra/pr/<number>
  *
  * In the interactive CLI, `add` (new or existing), `open`, a worktree picked
  * from `ls`, and `pr` start a brand-new empty session in the target worktree
@@ -784,16 +784,12 @@ async function createFromPr(
 		}
 	}
 
-	// gh pr checkout can move current branch; instead resolve head ref then add worktree.
+	// A fork PR may call its branch "main" or use any other local branch name.
+	// Its head name is display-only: never fetch into or open that local branch.
+	prNumber = BigInt(prNumber).toString();
 	const view = await pi.exec(
 		"gh",
-		[
-			"pr",
-			"view",
-			prNumber,
-			"--json",
-			"headRefName,headRepository,headRepositoryOwner,number,title,isCrossRepository",
-		],
+		["pr", "view", prNumber, "--json", "headRefName,headRefOid,title"],
 		{ cwd },
 	);
 
@@ -805,94 +801,107 @@ async function createFromPr(
 		return;
 	}
 
-	let data: {
-		headRefName?: string;
-		number?: number;
-		title?: string;
-		isCrossRepository?: boolean;
-	};
+	let data: { headRefName?: unknown; headRefOid?: unknown; title?: unknown };
 	try {
 		data = JSON.parse(view.stdout ?? "{}");
+		if (!data || typeof data !== "object") throw new Error("Invalid PR metadata");
 	} catch {
 		ctx.ui.notify(`Could not parse gh output:\n${view.stdout}`, "error");
 		return;
 	}
-
-	const branch = data.headRefName;
-	if (!branch) {
-		ctx.ui.notify(`PR #${prNumber} has no head branch`, "error");
+	if (typeof data.headRefName !== "string" || !data.headRefName ||
+		typeof data.headRefOid !== "string" || !/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i.test(data.headRefOid)) {
+		ctx.ui.notify(`PR #${prNumber} has no valid head branch and commit; refusing to create a worktree.`, "error");
 		return;
 	}
 
-	// Fetch the PR head into a local ref, then create a local branch if needed.
-	// Prefer: git fetch origin pull/<n>/head:<branch> when branch is unique enough.
+	const expectedHead = data.headRefOid.toLowerCase();
+	const fetchedRef = `refs/piastra/pull/${prNumber}/head`;
+	const branch = `piastra/pr/${prNumber}`;
+	const localRef = `refs/heads/${branch}`;
+	// Only this private, non-branch ref may be force-updated (PRs can be rebased).
+	// Never use shared FETCH_HEAD as a start point: another fetch can replace it.
 	const fetchPr = await run(
 		pi,
-		["fetch", "origin", `pull/${prNumber}/head:${branch}`],
+		["fetch", "--no-tags", "origin", `+refs/pull/${prNumber}/head:${fetchedRef}`],
 		cwd,
 	);
-
-	// If branch already exists, fetch above fails — try plain fetch of PR head then worktree add.
 	if (fetchPr.code !== 0) {
-		const hasLocal = await refExists(pi, cwd, `refs/heads/${branch}`);
-		if (!hasLocal) {
-			// Fetch to FETCH_HEAD and create branch from it.
-			const fetchHead = await run(
-				pi,
-				["fetch", "origin", `pull/${prNumber}/head`],
-				cwd,
+		ctx.ui.notify(`Could not fetch PR #${prNumber}:\n${fetchPr.stderr || fetchPr.stdout}\n\nNo worktree was opened.`, "error");
+		return;
+	}
+	const fetched = await run(pi, ["rev-parse", "--verify", `${fetchedRef}^{commit}`], cwd);
+	if (fetched.code !== 0 || fetched.stdout !== expectedHead) {
+		ctx.ui.notify(
+			`Fetched head does not match PR #${prNumber}.\nExpected: ${expectedHead}\nFetched: ${fetched.stdout || fetched.stderr}\n\n` +
+			"The PR may have changed, or gh and origin may refer to different repositories. Check origin and retry; no worktree was opened.",
+			"error",
+		);
+		return;
+	}
+
+	// Exact managed branch only. General add/open's slug and suffix aliases are
+	// convenient for manual navigation, but cannot prove PR identity.
+	const worktrees = await listWorktrees(pi, cwd);
+	const existing = worktrees.find((wt) => wt.branch === branch);
+	const hasLocal = await refExists(pi, cwd, localRef);
+	if (hasLocal) {
+		const local = await run(pi, ["rev-parse", "--verify", `${localRef}^{commit}`], cwd);
+		if (local.code !== 0 || local.stdout !== expectedHead) {
+			ctx.ui.notify(
+				`Refusing to open PR #${prNumber}: existing branch ${branch} differs from the PR head.\n` +
+				`Expected: ${expectedHead}\nLocal: ${local.stdout || local.stderr}\n\n` +
+				"The branch and any worktree/local changes are preserved. To create a fresh checkout, rename the existing branch and move its worktree away from the managed path before retrying; nothing was reset.",
+				"error",
 			);
-			if (fetchHead.code !== 0) {
-				ctx.ui.notify(
-					`Could not fetch PR #${prNumber}:\n${fetchPr.stderr || fetchHead.stderr}`,
-					"error",
-				);
-				return;
-			}
-			// Create local branch from FETCH_HEAD via worktree add -b
-			const worktrees = await listWorktrees(pi, cwd);
-			const mainPath = mainWorktreePath(worktrees) || cwd;
-			const existing = findWorktree(worktrees, branch);
-			if (existing) {
-				await openWorktree(pi, ctx, cwd, branch);
-				return;
-			}
-			if (ctx.mode === "tui") {
-				const refusal = switchRefusal(pi, ctx);
-				if (refusal) {
-					ctx.ui.notify(`${refusal}\n\nThe worktree was not created.`, "warning");
-					return;
-				}
-			}
-			const path = resolveWorktreePath(mainPath, branch);
-			const add = await run(
-				pi,
-				["worktree", "add", "-b", branch, path, "FETCH_HEAD"],
-				cwd,
-			);
-			if (add.code !== 0) {
-				ctx.ui.notify(
-					`worktree add failed:\n${add.stderr || add.stdout}`,
-					"error",
-				);
-				return;
-			}
-			if (data.title) {
-				ctx.ui.notify(`PR #${prNumber}: ${data.title}`, "info");
-			}
-			const outcome = await activateWorktree(pi, ctx, path, branch, true);
-			if (outcome && outcome !== "switched") {
-				reportCreatedWorktreeNotSwitched(ctx, branch, path, outcome);
-			}
 			return;
 		}
 	}
 
-	// createWorktree notifies with path; prefix PR context first.
-	if (data.title) {
-		ctx.ui.notify(`PR #${prNumber}: ${data.title}`, "info");
+	const path = existing?.path ?? resolveWorktreePath(mainWorktreePath(worktrees) || cwd, branch);
+	if (!existing) {
+		const pathTaken = worktrees.find((wt) => wt.path === path);
+		if (pathTaken) {
+			ctx.ui.notify(`Path already used by another worktree:\n${path}\n(${pathTaken.branch ?? "detached"})`, "error");
+			return;
+		}
+		if (ctx.mode === "tui") {
+			const refusal = switchRefusal(pi, ctx);
+			if (refusal) {
+				ctx.ui.notify(`${refusal}\n\nThe worktree was not created.`, "warning");
+				return;
+			}
+		}
+		const add = await run(
+			pi,
+			hasLocal
+				? ["worktree", "add", path, branch]
+				: ["worktree", "add", "-b", branch, path, expectedHead],
+			cwd,
+		);
+		if (add.code !== 0) {
+			ctx.ui.notify(`worktree add failed:\n${add.stderr || add.stdout}`, "error");
+			return;
+		}
 	}
-	await createWorktree(pi, ctx, cwd, branch);
+
+	// Check the actual checkout, not just a possibly stale worktree-list entry.
+	// This also fails closed if another Git operation changed it while we waited.
+	const head = await run(pi, ["rev-parse", "--verify", "HEAD^{commit}"], path);
+	const checkedOutRef = await run(pi, ["symbolic-ref", "--quiet", "HEAD"], path);
+	if (head.code !== 0 || head.stdout !== expectedHead || checkedOutRef.code !== 0 || checkedOutRef.stdout !== localRef) {
+		ctx.ui.notify(
+			`Refusing to open PR #${prNumber}: worktree no longer matches ${branch} at ${expectedHead}.\n` +
+			`Worktree kept at:\n${path}\n\nNo session switch was attempted; inspect the checkout and retry.`,
+			"error",
+		);
+		return;
+	}
+	ctx.ui.notify(`PR #${prNumber}${typeof data.title === "string" ? `: ${data.title}` : ""}\n${data.headRefName} → ${branch} (${shortHead(expectedHead)})`, "info");
+	const outcome = await activateWorktree(pi, ctx, path, branch, !existing);
+	if (!existing && outcome && outcome !== "switched") {
+		reportCreatedWorktreeNotSwitched(ctx, branch, path, outcome);
+	}
 }
 
 function parseArgs(raw: string): { cmd: string; rest: string } {
