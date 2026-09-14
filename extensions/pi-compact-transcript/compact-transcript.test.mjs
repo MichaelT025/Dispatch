@@ -9,9 +9,13 @@ import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { stripTerminalSequences } from '@earendil-works/pi-tui';
-import { ToolExecutionComponent } from '@earendil-works/pi-coding-agent';
+import {
+  AssistantMessageComponent,
+  getMarkdownTheme,
+  initTheme,
+  ToolExecutionComponent,
+} from '@earendil-works/pi-coding-agent';
 import compactTranscript from './extensions/compact-transcript.ts';
-import { initTheme } from '@earendil-works/pi-coding-agent';
 
 // The real ToolExecutionComponent shells use pi's global theme singleton.
 await initTheme();
@@ -519,4 +523,209 @@ test('delegate breaks historical bursts on first hydration only; repaints do not
   assert.equal(state.toolsById.get('h4').burstCount, 2, 'trailing same-tool rows still group');
   assert.equal(state.hiddenToolIds.has('h3'), true);
   assert.match(renderedText(grep1), /m1/s);
+});
+
+// --- assistant message harness ----------------------------------------------
+//
+// Real AssistantMessageComponent (same prototype the extension patches). Tests
+// force `state.config.enabled` explicitly because earlier tests in this file can
+// leave the persisted setting on or off.
+
+const ASSISTANT_PATCH_KEY = Symbol.for('pi-compact-transcript.assistant-patch');
+
+const assistantMessage = (content, stopReason, errorMessage) => {
+  const message = { role: 'assistant', content, stopReason };
+  if (errorMessage !== undefined) message.errorMessage = errorMessage;
+  return message;
+};
+
+function makeAssistant(message, { hideThinking = true, transformers = [], outputPad = 1 } = {}) {
+  return new AssistantMessageComponent(
+    message,
+    hideThinking,
+    getMarkdownTheme(),
+    'Thinking...',
+    outputPad,
+    transformers,
+  );
+}
+
+// Render a message through pi's saved original updateContent, bypassing the
+// compact patch, to compare against the native baseline.
+function nativeRenderedText(message, hideThinking = true) {
+  const component = makeAssistant(message, { hideThinking });
+  const saved = AssistantMessageComponent.prototype[ASSISTANT_PATCH_KEY]?.originalUpdateContent;
+  saved.call(component, message, false);
+  return renderedText(component);
+}
+
+function enableCompact() {
+  const host = createHost();
+  compactTranscript(host.pi);
+  state.config.enabled = true;
+  state.currentTheme = fakeTheme;
+  return host;
+}
+
+test('compact hidden thinking surfaces provider errors for empty and partial messages, once each', () => {
+  enableCompact();
+
+  // Empty content + provider error message: native status must survive.
+  const emptyError = assistantMessage([], 'error', 'provider blew up');
+  assert.match(renderedText(makeAssistant(emptyError)), /Error: provider blew up/);
+  assert.equal(renderedText(makeAssistant(emptyError)), nativeRenderedText(emptyError));
+
+  // Missing errorMessage falls back to pi's "Unknown error" string.
+  const unknownError = assistantMessage([], 'error');
+  assert.match(renderedText(makeAssistant(unknownError)), /Error: Unknown error/);
+
+  // Partial content: assistant text stays visible alongside the error status.
+  const partialError = makeAssistant(
+    assistantMessage([{ type: 'text', text: 'Partial response body' }], 'error', 'network reset'),
+  );
+  const partialText = renderedText(partialError);
+  assert.match(partialText, /Partial response body/);
+  assert.match(partialText, /Error: network reset/);
+
+  // Repeated update/render/invalidate must not stack duplicate status lines.
+  partialError.updateContent(partialError.lastMessage);
+  partialError.invalidate();
+  const repeated = renderedText(partialError);
+  assert.equal((repeated.match(/Error: network reset/g) ?? []).length, 1);
+});
+
+test('compact hidden thinking surfaces abort notices (default and custom)', () => {
+  enableCompact();
+
+  const defaultAbort = assistantMessage([], 'aborted', 'Request was aborted');
+  assert.match(renderedText(makeAssistant(defaultAbort)), /Operation aborted/);
+  assert.equal(renderedText(makeAssistant(defaultAbort)), nativeRenderedText(defaultAbort));
+
+  // Missing errorMessage also resolves to the native default abort text.
+  const bareAbort = assistantMessage([{ type: 'text', text: 'Stopping now' }], 'aborted');
+  const bareText = renderedText(makeAssistant(bareAbort));
+  assert.match(bareText, /Stopping now/);
+  assert.match(bareText, /Operation aborted/);
+
+  const customAbort = makeAssistant(assistantMessage([], 'aborted', 'Cancelled by user'));
+  assert.match(renderedText(customAbort), /Cancelled by user/);
+  assert.doesNotMatch(renderedText(customAbort), /Operation aborted/);
+});
+
+test('compact hidden thinking surfaces length truncation warnings with and without text and tool calls', () => {
+  enableCompact();
+
+  // No assistant text at all: the warning is the only visible content.
+  const bare = assistantMessage([], 'length');
+  assert.match(renderedText(makeAssistant(bare)), /Response was truncated before completion\./);
+  assert.equal(renderedText(makeAssistant(bare)), nativeRenderedText(bare));
+
+  const withText = assistantMessage([{ type: 'text', text: 'Partial answer' }], 'length');
+  const withTextRendered = renderedText(makeAssistant(withText));
+  assert.match(withTextRendered, /Partial answer/);
+  assert.match(withTextRendered, /Response was truncated before completion\./);
+
+  // Length stops can land on a tool-call turn; native surfaces it regardless.
+  const toolCall = makeAssistant(assistantMessage(
+    [{ type: 'toolCall', id: 'tc1', name: 'bash', arguments: {} }],
+    'length',
+  ));
+  assert.match(renderedText(toolCall), /Response was truncated before completion\./);
+
+  toolCall.invalidate();
+  assert.equal(
+    (renderedText(toolCall).match(/Response was truncated before completion\./g) ?? []).length,
+    1,
+    'no duplicate truncation warnings after re-render',
+  );
+});
+
+test('healthy thinking-only turns stay invisible in compact hidden-thinking mode', () => {
+  enableCompact();
+
+  const thinkingOnly = makeAssistant(assistantMessage(
+    [{ type: 'thinking', thinking: 'secret chain of thought' }],
+    'stop',
+  ));
+  const text = renderedText(thinkingOnly);
+  assert.doesNotMatch(text, /secret chain of thought/);
+  assert.doesNotMatch(text, /Thinking\.\.\./, 'no hidden-thinking placeholder in compact mode');
+  assert.equal(text, '');
+});
+
+test('compact hidden thinking retains the original lastMessage across toggles/invalidate; compact off is native', () => {
+  enableCompact();
+
+  const original = assistantMessage([
+    { type: 'thinking', thinking: 'reasoning details' },
+    { type: 'text', text: 'Visible answer' },
+  ], 'stop');
+  const component = makeAssistant(original);
+
+  // Hidden: thinking absent, answer present, unfiltered source retained.
+  assert.doesNotMatch(renderedText(component), /reasoning details/);
+  assert.match(renderedText(component), /Visible answer/);
+  assert.equal(component.lastMessage, original, 'lastMessage must stay the unfiltered source');
+
+  // Reveal: the native path renders the original thinking block.
+  component.setHideThinkingBlock(false);
+  assert.match(renderedText(component), /reasoning details/);
+  assert.equal(component.lastMessage, original);
+
+  // Hide again and force a full invalidate: source content must not be lost.
+  component.setHideThinkingBlock(true);
+  component.invalidate();
+  assert.equal(component.lastMessage, original);
+  assert.doesNotMatch(renderedText(component), /reasoning details/);
+  component.setHideThinkingBlock(false);
+  assert.match(renderedText(component), /reasoning details/);
+
+  // Compact off + hidden thinking is purely native: pi's own label, no filtering.
+  component.setHideThinkingBlock(true);
+  state.config.enabled = false;
+  component.updateContent(original);
+  assert.equal(component.lastMessage, original);
+  assert.match(renderedText(component), /Thinking\.\.\./);
+  assert.doesNotMatch(renderedText(component), /reasoning details/);
+
+  // Turning compact back on re-enters the filtered path from the original.
+  state.config.enabled = true;
+  component.updateContent(original);
+  assert.equal(component.lastMessage, original);
+  assert.doesNotMatch(renderedText(component), /reasoning details/);
+});
+
+test('compact hidden thinking uses native Markdown transformers, streaming flags, and keeps the commentary rail', () => {
+  enableCompact();
+
+  const calls = [];
+  const transformer = (markdown, context) => {
+    calls.push({ markdown, ...context });
+    return markdown.replaceAll('ALPHA', 'OMEGA');
+  };
+  const message = assistantMessage([
+    { type: 'thinking', thinking: 'hidden reasoning' },
+    { type: 'text', text: 'ALPHA answer' },
+    { type: 'toolCall', id: 'tc1', name: 'bash', arguments: {} },
+  ], 'stop');
+  const component = makeAssistant(message, { transformers: [transformer] });
+
+  const text = renderedText(component);
+  assert.match(text, /OMEGA answer/, 'transformer must run through the native Markdown path');
+  assert.doesNotMatch(text, /ALPHA/);
+  assert.doesNotMatch(text, /hidden reasoning/);
+  assert.ok(calls.length > 0, 'transformer must be invoked');
+  assert.equal(calls[0].messageType, 'assistant');
+  assert.equal(calls[0].isStreaming, false);
+
+  // Streaming flag comes from updateContent's isStreaming argument.
+  calls.length = 0;
+  component.updateContent(message, true);
+  renderedText(component);
+  assert.ok(calls.some(call => call.isStreaming === true), 'streaming flag must reach the transformer');
+  assert.equal(component.lastMessage, message, 'streaming path must still retain the original source');
+
+  // Commentary rail decorates assistant Markdown followed by a tool call. The
+  // rail is drawn with the plugin's captured theme (fakeTheme -> [accent]).
+  assert.match(renderedText(component), /\u2502/, 'commentary rail must be preserved');
 });

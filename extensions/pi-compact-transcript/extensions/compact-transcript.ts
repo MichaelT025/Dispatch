@@ -897,28 +897,6 @@ function patchToolExecutionComponent() {
 	proto[TOOL_PATCH_KEY] = { originalUpdateDisplay, originalRender };
 }
 
-/** Re-apply pi's markdown transformers (mirrors createMarkdownTransform in pi core).
- *  Without this, Mermaid blocks fall back to raw code when this extension
- *  takes over rendering of assistant text. */
-function applyMarkdownTransformers(
-	markdown: string,
-	transformers: any[],
-	messageType: string,
-	isStreaming: boolean,
-	availableWidth: number,
-): string {
-	let transformedMarkdown = markdown;
-	for (const transformer of transformers ?? []) {
-		try {
-			const transformed = transformer(transformedMarkdown, { messageType, isStreaming, availableWidth });
-			if (typeof transformed === "string") transformedMarkdown = transformed;
-		} catch {
-			// Keep the current Markdown and continue with the next transformer.
-		}
-	}
-	return transformedMarkdown;
-}
-
 class CommentaryRail implements Component {
 	private readonly content: Component;
 
@@ -937,13 +915,21 @@ class CommentaryRail implements Component {
 	}
 }
 
+// pi-tui may be loaded as more than one module instance (the coding agent pins
+// its own copy), so `instanceof Markdown` misses Markdown children created by
+// pi's native AssistantMessageComponent. Match by identity when possible and by
+// the stable exported class name otherwise.
+function isMarkdownComponent(component: any): boolean {
+	return component instanceof Markdown || component?.constructor?.name === "Markdown";
+}
+
 function frameCommentary(component: any, message: any): void {
 	if (!message.content.some((content: any) => content.type === "toolCall")) return;
 	const children = component.contentContainer?.children;
 	if (!Array.isArray(children)) return;
 	let framed = false;
 	for (let i = 0; i < children.length; i++) {
-		if (children[i] instanceof Markdown) {
+		if (isMarkdownComponent(children[i])) {
 			children[i] = new CommentaryRail(children[i]);
 			framed = true;
 		}
@@ -971,41 +957,38 @@ function patchAssistantMessageComponent() {
 			frameCommentary(this, message);
 			return result;
 		}
-		if (!this.contentContainer || typeof this.contentContainer.clear !== "function") {
-			return originalUpdateContent.call(this, message, isStreaming);
+
+		// Compact mode hides thinking blocks entirely. Native updateContent already
+		// renders accurate stopReason status (provider error/abort/length warnings)
+		// and routes text through the real Markdown transformers, so hand it a
+		// shallow view with ONLY thinking blocks removed. Status logic stays in pi.
+		const filteredMessage = {
+			...message,
+			content: message.content.filter((c: any) => c.type !== "thinking"),
+		};
+
+		// Keep the existing compact semantics: real assistant text ends the current
+		// tool burst and clears the hidden-thought ticker unless tool calls are
+		// still pending. Thinking-only turns leave both untouched.
+		const hasTexts = message.content.some((c: any) => c.type === "text" && c.text?.trim());
+		if (hasTexts) {
+			if (!message.content.some((c: any) => c.type === "toolCall") && state.runningToolIds.size === 0) {
+				clearCurrentThought();
+			}
+			state.currentBurst = [];
 		}
 
-		this.isStreaming = isStreaming;
-		this.lastMessage = message;
-		this.contentContainer.clear();
-		this.hasToolCalls = message.content.some((c: any) => c.type === "toolCall");
-
-		// Thinking blocks are suppressed entirely; only real text is rendered.
-		const texts = message.content.filter((c: any) => c.type === "text" && c.text?.trim());
-		if (texts.length === 0) return;
-
-		if (!this.hasToolCalls && state.runningToolIds.size === 0) clearCurrentThought();
-		// Assistant text ends a tool burst. The live path also does this via
-		// message_update events; doing it here too keeps hydrated history from
-		// grouping tool rows across turn boundaries.
-		state.currentBurst = [];
-
-		this.contentContainer.addChild(new Spacer(1));
-		for (const content of texts) {
-			this.contentContainer.addChild(
-				new Markdown(content.text.trim(), this.outputPad, 0, this.markdownTheme, undefined, {
-					transform: (markdown: string, availableWidth: number) =>
-						applyMarkdownTransformers(
-							markdown,
-							(this as any).markdownTransformers,
-							"assistant",
-							(this as any).isStreaming ?? false,
-							availableWidth,
-						),
-				}),
-			);
+		try {
+			const result = originalUpdateContent.call(this, filteredMessage, isStreaming);
+			frameCommentary(this, message);
+			return result;
+		} finally {
+			// Native updateContent sets lastMessage to the filtered view. Keep the
+			// ORIGINAL message so invalidate()/setHideThinkingBlock()/setOutputPad()
+			// can always re-render the full source and a later thinking reveal does
+			// not silently lose content.
+			this.lastMessage = message;
 		}
-		frameCommentary(this, message);
 	};
 
 	proto[ASSISTANT_PATCH_KEY] = { originalUpdateContent };
