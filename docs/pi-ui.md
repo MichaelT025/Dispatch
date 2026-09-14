@@ -75,9 +75,16 @@ Sidebar scrolling still needs reproduction and fixing, including determining
 whether it originates in Pi's terminal renderer. Automated editor/lifecycle
 checks do not constitute live terminal or scrolling verification.
 
-The existing `patch-atelier-agent-label.mjs` script only patches the upstream npm
-copy. That personal patch is deliberately absent from this clean baseline; a
-managed-fork install restores the upstream activity label until we port it.
+The managed fork includes the earlier agent-name customization: the activity
+label below the editor shows the active PiAstra role instead of READY/WORKING,
+while retaining colors, working animation and warning/error indicators. Without
+PiAstra it falls back to Atelier's normal activity label. This was the only
+source modification found when auditing the old npm installation against the
+published 0.10.1 package; your sidebar/layout preferences remain in the existing
+`pi-atelier.json`.
+
+The old `patch-atelier-agent-label.mjs` script is only for the upstream npm copy;
+do not use it to update the fork. Re-run the CLI installer to deploy fork changes.
 
 To return to upstream, remove the managed `pi-atelier/extensions/index.ts` entry
 from `settings.json`, then use `pi config` to re-enable the upstream package's
@@ -97,4 +104,4 @@ An LSP is optional code intelligence, not a syntax-highlighting requirement. Lan
 Settings are backed up before installation. Atelier and TODOs can be removed independently with `pi remove npm:pi-atelier@0.10.1` and `pi remove npm:@juicesharp/rpiv-todo@2.9.0`, then `/reload`. To disable the independent edit renderer, remove only its `extensions/pi-ui/index.ts` entry from Pi settings; keep the installed file because the worker viewer also imports its rendering helper.
 
 Sources: [Pi Atelier](https://github.com/michaelmjhhhh/pi-atelier), [rpiv-todo](https://github.com/juicesharp/rpiv-mono/tree/main/packages/rpiv-todo), [Pi's diff highlighting issue](https://github.com/earendil-works/pi/issues/4064), [example lazy LSP extension](https://github.com/samfoy/pi-lsp-extension).
-`node scripts/patch-atelier-agent-label.mjs` replaces Atelier's activity text with the current PiAstra role while preserving activity colors and working animation. It backs up the plugin renderer and can be reapplied after an Atelier update. Run `/reload` after applying it.
+For legacy upstream npm installations only, `node scripts/patch-atelier-agent-label.mjs` applies the role label with a renderer backup. The managed fork already includes it; use the CLI installer and `/reload` instead.

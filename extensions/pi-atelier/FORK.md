@@ -52,7 +52,12 @@ These checks do not exercise interactive scrolling or terminal rendering.
   [the protocol](../../docs/shortcuts.md#atelier-cooperation-and-foreign-editors).
 - **Needs reproduction:** the user's sidebar scrolling issue; its cause may be
   in Atelier or Pi's terminal renderer. No scrolling fix is claimed here.
-- The user's local agent-label patch is intentionally not included in this clean
-  baseline. It must be ported explicitly before the fork displays role labels.
+- `src/footer.ts` ports the pre-fork agent-label customization: live PiAstra
+  `Agent: <role>` status replaces READY/WORKING with the uppercase role name.
+  Activity colors and working animation remain; warnings/errors stay explicit.
+  Without a recognized PiAstra role, standalone Atelier keeps its original label.
+  The old npm installation was compared with the integrity-verified 0.10.1
+  tarball: this was its only source patch (the extra footer file was a backup).
+  User sidebar/layout preferences remain in `pi-atelier.json`, not vendored code.
 - **No remote GitHub fork created.** This is an in-tree vendored fork only;
   upstream remains https://github.com/michaelmjhhhh/pi-atelier.

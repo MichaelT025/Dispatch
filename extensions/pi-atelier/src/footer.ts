@@ -105,7 +105,15 @@ function activityText(
 	compact: boolean,
 ): string {
 	const fallback = state.activity.toUpperCase();
-	const label = state.activity === "working" && !compact ? (state.workingLabel ?? fallback) : fallback;
+	// PiAstra active role label; keep activity color and animation. Read live
+	// extension status on every render, with the original standalone fallback.
+	const agent = (state.extensionStatuses ?? [])
+		.map((text) => /^Agent: (orchestrator|general|fast|review)$/.exec(text)?.[1])
+		.find(Boolean);
+	const activityLabel = state.activity === "working" && !compact ? (state.workingLabel ?? fallback) : fallback;
+	const label = agent
+		? agent.toUpperCase() + (state.activity === "ready" || state.activity === "working" ? "" : ` · ${activityLabel}`)
+		: activityLabel;
 	const dots =
 		state.activity === "working" && !compact ? workingDots.padEnd(WORKING_DOT_FRAMES[0].length, " ") : "";
 	const role: PaletteRole =
