@@ -16,6 +16,7 @@ import { createFilePrefsStore } from './prefs.mjs';
 import { createWorkerSidebar } from './sidebar.mjs';
 import { createSessionPhaseGuard, finalizeOutstandingWorkers, registerWorkerGuard, sessionPhaseGuardMessage, settleWorkerBatch, workerGuardMessage } from './guard.mjs';
 import { installShortcuts } from './shortcuts.ts';
+import { createWorkerBridge } from './worker-bridge.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const config = JSON.parse(readFileSync(path.join(root, 'config/agents.json'), 'utf8'));
@@ -59,6 +60,7 @@ export default function (pi: ExtensionAPI) {
   const agents = createAgents(pi, config, store);
   const workerViews = new Map<number, any>();
   const sidebar = createWorkerSidebar(pi.events, workerViews);
+  const bridge = createWorkerBridge(pi.events, workerViews);
   const sessionPhases = createSessionPhaseGuard();
   const workerGuard = registerWorkerGuard(pi.events, workerViews, sessionPhases);
   // ctx.isIdle() only tracks the agent run; compaction and branch summarization
@@ -70,7 +72,7 @@ export default function (pi: ExtensionAPI) {
   pi.on('session_before_tree', async event => { sessionPhases.beforeTree(event); });
   pi.on('session_tree', async () => { sessionPhases.afterTree(); });
   pi.on('session_start', async () => { sessionPhases.reset(); });
-  pi.on('session_shutdown', async () => { workerGuard.dispose(); sessionPhases.reset(); sidebar.dispose(); });
+  pi.on('session_shutdown', async () => { workerGuard.dispose(); sessionPhases.reset(); sidebar.dispose(); bridge.dispose(); });
   let nextWorkerId = 0;
   let viewerOpen = false;
   const openWorkers = async (ctx: any) => {
@@ -93,6 +95,7 @@ export default function (pi: ExtensionAPI) {
       }
     }
     sidebar.publish();
+    bridge.publish();
   };
   pi.on('session_start', restoreWorkers);
   pi.on('session_tree', restoreWorkers);
@@ -170,14 +173,15 @@ export default function (pi: ExtensionAPI) {
       if (details?.workers) return createWorkerProgress(details.workers, expanded, theme);
       return new Text(output.content.filter(c => c.type === 'text').map(c => c.text).join('\n'), 0, 0);
     },
-    async execute(_id, params, signal, onUpdate, ctx) {
+    async execute(toolCallId, params, signal, onUpdate, ctx) {
       if (agents.active !== 'orchestrator') throw new Error('Only the orchestrator can delegate.');
       validateTasks(params.tasks);
       const selections = params.tasks.map(task => agents.selection(task.role));
-      const workers = params.tasks.map((task, index) => makeWorker(task, nextWorkerId++, selections[index].model));
+      const workers = params.tasks.map((task, index) => makeWorker(task, nextWorkerId++, selections[index].model, toolCallId));
       workers.forEach(worker => workerViews.set(worker.id, { worker }));
       const publish = () => {
         sidebar.publish();
+        bridge.publish();
         onUpdate?.(result(progressText(workers), { workers: workers.map(w => ({ ...w, recent: [...w.recent] })) }));
       };
       // UI publication failures (a disposed sidebar or a throwing onUpdate)
@@ -201,7 +205,11 @@ export default function (pi: ExtensionAPI) {
           let transcript: string | undefined;
           let abort: (() => void) | undefined;
           const timeout = AbortSignal.timeout(15 * 60 * 1000);
-          const cancel = AbortSignal.any([signal || new AbortController().signal, timeout]);
+          // Per-worker cancel (web UI `cancel` event): joins the batch signal and
+          // the timeout so it takes the same abort path and reports `cancelled`.
+          const own = new AbortController();
+          workerViews.get(worker.id).cancel = () => own.abort(new Error('Cancelled by the user.'));
+          const cancel = AbortSignal.any([signal || new AbortController().signal, timeout, own.signal]);
           try {
             cancel.throwIfAborted();
             if (!model) throw new Error(`Unavailable model ${selected.model}; no fallback used.`);
@@ -217,7 +225,10 @@ export default function (pi: ExtensionAPI) {
               ? [...session.state.messages, session.state.streamingMessage] : session.state.messages;
             worker.status = 'running';
             worker.activity = 'Thinking…';
-            session.subscribe((event: any) => { trackEvent(worker, event); });
+            session.subscribe((event: any) => {
+              trackEvent(worker, event);
+              bridge.transcript(worker.id, session.state.messages, session.state.streamingMessage);
+            });
             abort = () => { void session.abort(); };
             cancel.addEventListener('abort', abort, { once: true }); cancel.throwIfAborted();
             await session.prompt(task.task);
@@ -240,7 +251,9 @@ export default function (pi: ExtensionAPI) {
             // stream with an empty or partially flushed file on completion.
             const finalMessages = session ? [...session.state.messages] : undefined;
             const record = workerViews.get(worker.id);
+            if (record) record.cancel = undefined;
             if (record && finalMessages) record.getMessages = () => finalMessages;
+            bridge.transcript(worker.id, finalMessages, null);
             try { session?.dispose(); } catch { /* teardown must not reject the batch */ }
           }
         }));
