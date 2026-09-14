@@ -14,10 +14,16 @@ try {
 } catch (error) { if (error.code !== 'ENOENT') throw error; }
 const installed = path.join(agentDir, 'piastra', 'package');
 for (const dir of ['extensions/piastra', 'extensions/pi-ui', 'extensions/pi-worktree', 'config', 'roles']) await mkdir(path.join(installed, dir), { recursive: true });
-for (const file of ['extensions/piastra/index.ts', 'extensions/piastra/policy.mjs', 'extensions/piastra/agents.mjs', 'extensions/piastra/guard.mjs', 'extensions/piastra/progress.mjs', 'extensions/piastra/sidebar.mjs', 'extensions/piastra/worker-view.ts', 'extensions/piastra/worker-render.ts', 'extensions/piastra/shortcuts.ts', 'extensions/pi-worktree/git-worktree.ts', 'extensions/pi-worktree/LICENSE', 'config/agents.json', ...['orchestrator', 'general', 'fast', 'review'].map(role => `roles/${role}.md`)]) {
+for (const file of ['extensions/piastra/index.ts', 'extensions/piastra/policy.mjs', 'extensions/piastra/agents.mjs', 'extensions/piastra/prefs.mjs', 'extensions/piastra/guard.mjs', 'extensions/piastra/progress.mjs', 'extensions/piastra/sidebar.mjs', 'extensions/piastra/worker-view.ts', 'extensions/piastra/worker-render.ts', 'extensions/piastra/shortcuts.ts', 'extensions/pi-worktree/git-worktree.ts', 'extensions/pi-worktree/LICENSE', 'config/agents.json', ...['orchestrator', 'general', 'fast', 'review'].map(role => `roles/${role}.md`)]) {
   await copyFile(path.join(root, file), path.join(installed, file));
 }
-await writeFile(path.join(installed, 'package.json'), JSON.stringify({ name: 'piastra-user-extension', private: true, type: 'module' }) + '\n');
+// The preference store (prefs.mjs) is the only PiAstra module with a plain npm
+// runtime dependency that Pi's loader does not alias. Bundle it into the
+// standalone copy so the installed extension resolves it without a checkout or
+// a network install.
+await writeFile(path.join(installed, 'package.json'), JSON.stringify({ name: 'piastra-user-extension', private: true, type: 'module', dependencies: { 'proper-lockfile': '^4.1.2' } }) + '\n');
+await mkdir(path.join(installed, 'node_modules'), { recursive: true });
+await cp(path.join(root, 'node_modules', 'proper-lockfile'), path.join(installed, 'node_modules', 'proper-lockfile'), { recursive: true, force: true });
 await copyFile(path.join(root, 'extensions/pi-ui/index.ts'), path.join(installed, 'extensions/pi-ui/index.ts'));
 // Vendor the pi-queue fork runtime files (extension index + dependencies +
 // LICENSE/README), excluding tests. The fork is required: bail out before

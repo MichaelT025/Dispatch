@@ -135,3 +135,76 @@ test('/worktree pr refuses during compaction before touching refs', async () => 
   assert.ok(!execCalls.some((call) => call.command === 'gh'));
   assert.ok(!execCalls.some((call) => call.command === 'git' && call.args[0] === 'fetch'));
 });
+
+test('/worktree rm refuses the worktree this session is running in', async () => {
+  const notices = [];
+  const { pi, commands, execCalls } = fakePi(undefined);
+  const porcelain = [
+    'worktree C:/repo/main',
+    'HEAD aaaa',
+    'branch refs/heads/main',
+    '',
+    'worktree C:/repo/feature',
+    'HEAD bbbb',
+    'branch refs/heads/feature',
+    '',
+  ].join('\n');
+  const originalExec = pi.exec;
+  pi.exec = async (command, args, options) => {
+    if (command === 'git' && args[0] === 'worktree' && args[1] === 'list') {
+      return { code: 0, stdout: porcelain, stderr: '' };
+    }
+    return originalExec(command, args, options);
+  };
+  worktreeExtension(pi);
+  const ctx = fakeCtx(notices);
+  ctx.cwd = 'C:/repo/feature';
+
+  await commands.get('worktree').handler('rm feature', ctx);
+
+  assert.match(
+    notices.map((entry) => entry.message).join('\n'),
+    /Refusing to remove the worktree this session is running in/,
+  );
+  assert.ok(
+    !execCalls.some((call) => call.command === 'git' && call.args[0] === 'worktree' && call.args[1] === 'remove'),
+    `the running worktree must not be removed: ${JSON.stringify(execCalls)}`,
+  );
+});
+
+test('/worktree rm refuses without interactive confirmation', async () => {
+  const notices = [];
+  const { pi, commands, execCalls } = fakePi(undefined);
+  const porcelain = [
+    'worktree C:/repo/main',
+    'HEAD aaaa',
+    'branch refs/heads/main',
+    '',
+    'worktree C:/repo/feature',
+    'HEAD bbbb',
+    'branch refs/heads/feature',
+    '',
+  ].join('\n');
+  const originalExec = pi.exec;
+  pi.exec = async (command, args, options) => {
+    if (command === 'git' && args[0] === 'worktree' && args[1] === 'list') {
+      return { code: 0, stdout: porcelain, stderr: '' };
+    }
+    return originalExec(command, args, options);
+  };
+  worktreeExtension(pi);
+  const ctx = fakeCtx(notices);
+  ctx.hasUI = false;
+  ctx.cwd = 'C:/repo/main';
+
+  await commands.get('worktree').handler('rm feature', ctx);
+
+  assert.match(
+    notices.map((entry) => entry.message).join('\n'),
+    /Refusing to remove a worktree without interactive confirmation/,
+  );
+  assert.ok(
+    !execCalls.some((call) => call.command === 'git' && call.args[0] === 'worktree' && call.args[1] === 'remove'),
+    `removal must not proceed without confirmation: ${JSON.stringify(execCalls)}`,
+  );
+});

@@ -41,7 +41,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { existsSync } from "node:fs";
 import { readFile, rm, writeFile } from "node:fs/promises";
-import { basename, join } from "node:path";
+import { basename, join, resolve } from "node:path";
 import { homedir } from "node:os";
 
 type ExecResult = { code: number; stdout: string; stderr: string };
@@ -214,6 +214,15 @@ async function detectDefaultBranch(pi: ExtensionAPI, cwd: string): Promise<strin
 function mainWorktreePath(worktrees: Worktree[]): string {
 	// First entry from `git worktree list` is the main worktree.
 	return worktrees[0]?.path ?? "";
+}
+
+/** Compare two worktree paths regardless of separator/case differences. */
+function samePath(left: string, right: string): boolean {
+	const a = resolve(left);
+	const b = resolve(right);
+	return process.platform === "win32"
+		? a.toLowerCase() === b.toLowerCase()
+		: a === b;
 }
 
 export function resolveWorktreePath(
@@ -685,20 +694,32 @@ async function removeWorktree(
 		ctx.ui.notify("Refusing to remove the main worktree", "error");
 		return;
 	}
+	if (samePath(wt.path, ctx.cwd)) {
+		ctx.ui.notify(
+			"Refusing to remove the worktree this session is running in. Switch to another worktree first.",
+			"error",
+		);
+		return;
+	}
 	if (wt.locked) {
 		ctx.ui.notify(`Worktree is locked:\n${wt.path}`, "error");
 		return;
 	}
 
-	if (ctx.hasUI) {
-		const ok = await ctx.ui.confirm(
-			"Remove worktree?",
-			`${wt.branch ?? "detached"}\n${wt.path}\n\nBranch is kept. Only the worktree directory is removed.`,
+	if (!ctx.hasUI) {
+		ctx.ui.notify(
+			"Refusing to remove a worktree without interactive confirmation.",
+			"error",
 		);
-		if (!ok) {
-			ctx.ui.notify("Aborted", "warning");
-			return;
-		}
+		return;
+	}
+	const ok = await ctx.ui.confirm(
+		"Remove worktree?",
+		`${wt.branch ?? "detached"}\n${wt.path}\n\nBranch is kept. Only the worktree directory is removed.`,
+	);
+	if (!ok) {
+		ctx.ui.notify("Aborted", "warning");
+		return;
 	}
 
 	let rm = await run(pi, ["worktree", "remove", wt.path], cwd);

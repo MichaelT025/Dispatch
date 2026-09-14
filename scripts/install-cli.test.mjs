@@ -17,6 +17,7 @@ const supportFiles = [
   'extensions/piastra/index.ts',
   'extensions/piastra/policy.mjs',
   'extensions/piastra/agents.mjs',
+  'extensions/piastra/prefs.mjs',
   'extensions/piastra/guard.mjs',
   'extensions/piastra/progress.mjs',
   'extensions/piastra/sidebar.mjs',
@@ -72,6 +73,14 @@ async function writeFixtureFork(root, { includeTests = true } = {}) {
   }
 }
 
+// The preference store needs a plain npm runtime dependency that Pi's loader
+// does not alias. Synthetic source trees must contain it so the installer can
+// bundle it into the standalone copy, exactly like a real checkout.
+async function writeRuntimeDependency(root) {
+  await mkdir(path.join(root, 'node_modules'), { recursive: true });
+  await cp(path.join(repoRoot, 'node_modules', 'proper-lockfile'), path.join(root, 'node_modules', 'proper-lockfile'), { recursive: true, force: true });
+}
+
 function count(list, value) {
   return list.filter((item) => item === value).length;
 }
@@ -85,6 +94,7 @@ test('installed fork is self-contained: runtime files copied, tests excluded, si
       await cp(path.join(repoRoot, file), path.join(sourceRoot, file));
     }
     await writeFixtureFork(sourceRoot);
+    await writeRuntimeDependency(sourceRoot);
     const settings = {
       customSetting: true,
       unrelated: { nested: [1, 2, 3] },
@@ -173,6 +183,13 @@ test('installed fork is self-contained: runtime files copied, tests excluded, si
     const shortcuts = await readFile(path.join(agentDir, 'piastra/package/extensions/piastra/shortcuts.ts'), 'utf8');
     assert.match(shortcuts, /piastra:compact-transcript:toggle/);
 
+    // The per-role preference store ships with the managed copy together with
+    // its non-aliased runtime dependency, so the installed extension resolves
+    // it without a checkout.
+    const prefs = await readFile(path.join(agentDir, 'piastra/package/extensions/piastra/prefs.mjs'), 'utf8');
+    assert.match(prefs, /proper-lockfile/);
+    await readFile(path.join(agentDir, 'piastra/package/node_modules/proper-lockfile/index.js'), 'utf8');
+
     // Stale development entries are gone.
     for (const entry of installed.extensions) {
       assert.doesNotMatch(entry, /\.\.[\\/]/);
@@ -203,6 +220,7 @@ test('installer fails before saving settings when vendored fork is missing, leav
       await mkdir(path.join(sourceRoot, path.dirname(file)), { recursive: true });
       await cp(path.join(repoRoot, file), path.join(sourceRoot, file));
     }
+    await writeRuntimeDependency(sourceRoot);
     // No fork in the source tree for this fixture.
     const settings = {
       customSetting: true,
@@ -250,6 +268,10 @@ test('installer preserves packages and disables only upstream worktree extension
     // at runtime, so a missing file would break the installed extension.
     const guard = await readFile(path.join(agentDir, 'piastra/package/extensions/piastra/guard.mjs'), 'utf8');
     assert.match(guard, /PIASTRA_WORKER_GUARD_CHANNEL/);
+    // The per-role preference store and its bundled dependency ship too.
+    const prefs = await readFile(path.join(agentDir, 'piastra/package/extensions/piastra/prefs.mjs'), 'utf8');
+    assert.match(prefs, /proper-lockfile/);
+    await readFile(path.join(agentDir, 'piastra/package/node_modules/proper-lockfile/index.js'), 'utf8');
   } finally {
     await rm(agentDir, { recursive: true, force: true });
   }
