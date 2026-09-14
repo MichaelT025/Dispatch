@@ -1,9 +1,21 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync } from 'node:fs';
+import { existsSync, realpathSync } from 'node:fs';
 import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join, resolve, dirname } from 'node:path';
+import { join, resolve as resolvePath, dirname } from 'node:path';
+
+// Windows can report os.tmpdir() through an 8.3 short name while git and the
+// session runtime return the long canonical path. Canonicalize both sides of
+// path assertions so they survive that difference on Windows runners.
+const resolve = (...segments) => {
+  const absolute = resolvePath(...segments);
+  try {
+    return realpathSync.native(absolute);
+  } catch {
+    return absolute;
+  }
+};
 import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
 import {

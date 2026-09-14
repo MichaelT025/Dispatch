@@ -28,6 +28,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { realpathSync } from 'node:fs';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -36,6 +37,15 @@ import { promisify } from 'node:util';
 import worktreeExtension, { resolveWorktreePath } from './git-worktree.ts';
 
 const execFileAsync = promisify(execFile);
+
+// Windows can return an 8.3 short temp path while git reports the long form.
+const canonical = (target) => {
+  try {
+    return realpathSync.native(target);
+  } catch {
+    return target;
+  }
+};
 
 /* ------------------------------------------------------------------ */
 /* Git helpers (real git, async, status captured like production)      */
@@ -549,7 +559,7 @@ test('/worktree pr reuses an already verified same-commit dedicated worktree', a
       `reuse must not report an error:\n${noticeText(notices)}`,
     );
     // Git's porcelain paths use forward slashes even on Windows.
-    assert.ok(noticeText(notices).replaceAll('\\', '/').includes(expectedPath.replaceAll('\\', '/')), 'the reused path is reported');
+    assert.ok(noticeText(notices).replaceAll('\\', '/').includes(canonical(expectedPath).replaceAll('\\', '/')), 'the reused path is reported');
     assertNoDestructiveCalls(second.calls);
   } finally {
     restoreEnv(saved);
