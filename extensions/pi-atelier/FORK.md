@@ -54,7 +54,10 @@ These checks do not exercise interactive scrolling or terminal rendering.
   in Atelier or Pi's terminal renderer. No scrolling fix is claimed here.
 - `src/footer.ts` ports the pre-fork agent-label customization: live PiAstra
   `Agent: <role>` status replaces READY/WORKING with the uppercase role name.
-  Activity colors and working animation remain; warnings/errors stay explicit.
+  Label colors are orchestrator purple, general yellow, fast blue and review
+  green (`src/palette.ts`). Working animation remains; warnings/errors retain
+  their activity colors and explicit labels. No-color rendering uses neutral
+  text for roles; unnamed themes use semantic theme colors.
   Without a recognized PiAstra role, standalone Atelier keeps its original label.
   The old npm installation was compared with the integrity-verified 0.10.1
   tarball: this was its only source patch (the extra footer file was a backup).

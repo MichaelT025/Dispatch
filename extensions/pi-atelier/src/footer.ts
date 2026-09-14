@@ -97,6 +97,13 @@ function contextRole(metrics: AtelierMetrics, config: AtelierConfig): PaletteRol
 	return "context";
 }
 
+const AGENT_PALETTE: Readonly<Record<string, PaletteRole>> = {
+	orchestrator: "agentOrchestrator",
+	general: "agentGeneral",
+	fast: "agentFast",
+	review: "agentReview",
+};
+
 function activityText(
 	state: AtelierState,
 	palette: AtelierPalette,
@@ -105,7 +112,7 @@ function activityText(
 	compact: boolean,
 ): string {
 	const fallback = state.activity.toUpperCase();
-	// PiAstra active role label; keep activity color and animation. Read live
+	// PiAstra active role label; keep working animation. Read live
 	// extension status on every render, with the original standalone fallback.
 	const agent = (state.extensionStatuses ?? [])
 		.map((text) => /^Agent: (orchestrator|general|fast|review)$/.exec(text)?.[1])
@@ -124,7 +131,12 @@ function activityText(
 				: state.activity === "warning"
 					? "warning"
 					: "error";
-	return palette.paint(role, theme.bold(`● ${sanitize(label)}${dots}`));
+	// Keep role colors stable while ready/working; warning/error colors take
+	// precedence so problems remain visible. Standalone activity colors survive.
+	const color = agent && (state.activity === "ready" || state.activity === "working")
+		? AGENT_PALETTE[agent] ?? role
+		: role;
+	return palette.paint(color, theme.bold(`● ${sanitize(label)}${dots}`));
 }
 
 function buildItems(

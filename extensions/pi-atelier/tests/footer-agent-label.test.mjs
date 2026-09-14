@@ -7,7 +7,7 @@
  * Expected behavior:
  * - known plain status /^Agent: (orchestrator|general|fast|review)$/ replaces
  *   the READY/workingLabel text with the UPPERCASE role, keeping working dots
- *   and the activity palette;
+ *   and agent-specific colors (warning/error activity colors take precedence);
  * - WARNING/ERROR append "ROLE · WARNING/ERROR";
  * - missing/unrelated/unknown Agent statuses fall back to existing labels.
  *
@@ -26,7 +26,7 @@ const footerPath = path.join(repoRoot, "extensions", "pi-atelier", "src", "foote
 const typesPath = path.join(repoRoot, "extensions", "pi-atelier", "src", "types.ts");
 const ROLES = ["orchestrator", "general", "fast", "review"];
 
-const COLORS = { mdHeading: 33, thinkingLow: 34, warning: 93, error: 31 };
+const COLORS = { accent: 35, success: 32, mdHeading: 33, thinkingLow: 34, warning: 93, error: 31 };
 const theme = {
 	fg: (color, text) => `\x1b[${COLORS[color] ?? 37}m${text}\x1b[0m`,
 	bold: (t) => t,
@@ -129,11 +129,55 @@ test("role line stays within the given width", () => {
 	assert.ok(visibleWidth(out) <= 40, `overflow: ${visibleWidth(out)}: ${strip(out)}`);
 });
 
-test("activity palette preserved for role labels; timer cleaned up", () => {
+test("agent label colors match requested roles in both densities and ready/working states", () => {
+	const expected = {
+		orchestrator: { rgb: '177;140;255', themeCode: 35 },
+		general: { rgb: '255;220;100', themeCode: 93 },
+		fast: { rgb: '110;168;254', themeCode: 34 },
+		review: { rgb: '126;211;137', themeCode: 32 },
+	};
+	for (const [role, color] of Object.entries(expected)) {
+		for (const density of ['comfortable', 'compact']) {
+			for (const activity of ['ready', 'working']) {
+				const st = state({ activity, extensionStatuses: [`Agent: ${role}`] });
+				const cfg = { ...DEFAULT_CONFIG, density };
+				const named = renderFooterLine(st, cfg, { ...theme, name: 'dark' }, 120);
+				assert.ok(named.includes(`\x1b[38;2;${color.rgb}m● ${role.toUpperCase()}`));
+				assert.ok(line(st, cfg).includes(`\x1b[${color.themeCode}m● ${role.toUpperCase()}`));
+				const noColor = renderFooterLine(st, cfg, { ...theme, name: 'dark' }, 120, false);
+				assert.ok(noColor.includes(`\x1b[37m● ${role.toUpperCase()}`));
+				assert.ok(!noColor.includes('\x1b[38;2;'), 'no fixed RGB in no-color mode');
+			}
+		}
+	}
+});
+
+test("warning and error activity colors override every agent color", () => {
+	for (const role of ROLES) {
+		for (const [activity, rgb, code] of [['warning', '255;159;67', 93], ['error', '255;93;115', 31]]) {
+			const st = state({ activity, extensionStatuses: [`Agent: ${role}`] });
+			const label = `● ${role.toUpperCase()} · ${activity.toUpperCase()}`;
+			assert.ok(line(st).includes(`\x1b[${code}m${label}`));
+			const named = renderFooterLine(st, DEFAULT_CONFIG, { ...theme, name: 'dark' }, 120);
+			assert.ok(named.includes(`\x1b[38;2;${rgb}m${label}`));
+		}
+	}
+});
+
+test("live agent changes update the color as well as the name", () => {
+	const st = state({ extensionStatuses: ['Agent: general'] });
+	assert.ok(line(st).includes('\x1b[93m● GENERAL'));
+	st.extensionStatuses = ['Agent: review'];
+	const updated = line(st);
+	assert.ok(updated.includes('\x1b[32m● REVIEW'));
+	assert.ok(!updated.includes('GENERAL'));
+});
+
+test("working role keeps its color and animation; timer cleaned up", () => {
 	const workingRole = line(state({ activity: "working", extensionStatuses: ["Agent: fast"] }));
 	const workingPlain = line(state({ activity: "working", workingLabel: "X" }));
-	assert.ok(workingRole.includes("\x1b[33m● FAST"), strip(workingRole));
-	assert.equal(workingRole.split("\x1b[33m").length, workingPlain.split("\x1b[33m").length);
+	assert.ok(workingRole.includes("\x1b[34m● FAST"), strip(workingRole));
+	assert.ok(workingPlain.includes("\x1b[33m● X"), 'standalone working color is unchanged');
 	const readyRole = line(state({ activity: "ready", extensionStatuses: ["Agent: fast"] }));
 	assert.ok(readyRole.includes("\x1b[34m● FAST"), strip(readyRole));
 
