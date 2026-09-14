@@ -21,6 +21,7 @@ const supportFiles = [
   'extensions/piastra/guard.mjs',
   'extensions/piastra/progress.mjs',
   'extensions/piastra/sidebar.mjs',
+  'extensions/piastra/worker-bridge.mjs',
   'extensions/piastra/worker-view.ts',
   'extensions/piastra/worker-render.ts',
   'extensions/piastra/shortcuts.ts',
@@ -182,6 +183,8 @@ test('installed fork is self-contained: runtime files copied, tests excluded, si
     // The piastra shortcuts module ships with the managed copy.
     const shortcuts = await readFile(path.join(agentDir, 'piastra/package/extensions/piastra/shortcuts.ts'), 'utf8');
     assert.match(shortcuts, /piastra:compact-transcript:toggle/);
+    const workerBridge = await readFile(path.join(agentDir, 'piastra/package/extensions/piastra/worker-bridge.mjs'), 'utf8');
+    assert.match(workerBridge, /WORKER_CHANNEL/);
 
     // The per-role preference store ships with the managed copy together with
     // its non-aliased runtime dependency, so the installed extension resolves
