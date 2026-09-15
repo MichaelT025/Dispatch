@@ -5,6 +5,27 @@ editor with a `CustomEditor` subclass (`extensions/piastra/shortcuts.ts`). All
 interception lives inside that editor's own `handleInput`, so nothing outside
 the main editor is affected.
 
+## Find help in the TUI
+
+Run **`/dispatch-help`** for commands, shortcuts and practical tips, or
+**`/dispatch-help shortcuts`** to open that section directly. This is a
+read-only overlay: it never sends a prompt or appends to the conversation.
+
+- Sections: **Up/Down** or **j/k**, **Enter/Right** to open.
+- Reading: **Up/Down/j/k**, **PgUp/PgDn**, **Home/End** to scroll;
+  **Enter/Right/Tab** next section, **Shift+Tab** previous, **Left/b** back.
+- **Esc/Ctrl+C** closes from either view. Text wraps on narrow terminals.
+
+The maintained Atelier footer appends `Tip: run /dispatch-help` immediately
+after model/reasoning when Dispatch help is available. It is hidden if the
+model segment is disabled, the terminal is too narrow, or Dispatch is absent.
+Standalone Atelier/plain Pi never gains this hint from a legacy Agent status.
+Re-run the managed installer and restart Pi to update installed copies.
+
+`node bin/dispatch.mjs --help` (or `-h`) provides a short terminal overview
+without starting Pi. The package's `dispatch` bin is help-only for now;
+setup and full CLI/WebUI launch modes are a separate implementation phase.
+
 ## Design constraints
 
 - **No global config writes** — `keybindings.json` is never read or modified.
@@ -196,7 +217,10 @@ Keys while a worker is open:
 - `extensions/pi-atelier/tests/editor-cooperation.test.mjs` and
   `shortcut-lifecycle.test.mjs` — composed editor and real extension lifecycle checks.
 - `extensions/piastra/index.ts` — installs the shortcuts and shares the agent
-  picker between `/agent` and the leader `a` action.
+  picker between `/agent` and the leader `a` action; registers `/dispatch-help`.
+- `extensions/piastra/help.mjs` — shared help sections and terminal formatter.
+- `extensions/piastra/help-view.ts` — section picker and scrollable help viewer.
+- `bin/dispatch.mjs` — dependency-free terminal help entry point.
 
 ## Tests
 

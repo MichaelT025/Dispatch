@@ -1,0 +1,284 @@
+/**
+ * Shared Dispatch help content.
+ *
+ * Pure data + plain-text formatters with no Pi imports, so the TUI viewer,
+ * the non-TUI command path, and the parent help-only bin can all share one
+ * factual source. `docs/shortcuts.md` is authoritative for key mappings;
+ * command behavior below is verified against the extension sources
+ * (piastra/index.ts, agents.mjs, pi-queue/index.ts, pi-worktree,
+ * pi-todo COMMAND_NAME, pi-atelier "atelier" command) and the native
+ * catalog in
+ * node_modules/@earendil-works/pi-coding-agent/dist/core/slash-commands.js.
+ *
+ * Factual boundaries (do not regress):
+ * - No standalone dispatch runtime, setup wizard, or web/launcher flags
+ *   exist in this tree; none are claimed. The full launcher/setup is
+ *   pending; only the help-only `dispatch --help` overview exists.
+ * - No plain-pi filesystem isolation exists; worker "isolation" is a tool
+ *   allowlist, not a security sandbox.
+ * - Unavailable models error; no automatic fallback is used.
+ * - /session and /name are native; /sessions and /skills are NOT native
+ *   commands and are never listed as such.
+ */
+
+export const helpSections = [
+  {
+    id: 'getting-started',
+    title: 'Getting started',
+    lines: [
+      'Dispatch adds role agents and parallel workers to the Pi editor.',
+      'Start with /dispatch-help commands for the full list, or read below.',
+      '',
+      '1. /dispatch shows the active role and per-role models.',
+      '2. /agent general picks a role; Shift+Tab cycles roles.',
+      '3. Orchestrator-only: ask the orchestrator to fan out parallel',
+      '  workers for independent pieces of work.',
+      '4. /workers (or Ctrl+X then w) watches live worker output.',
+      '5. /q <prompt> queues a follow-up; /st <prompt> steers the run.',
+      '',
+      'When to use what:',
+      '- Solo edit or question: just talk, or /agent fast for docs/research.',
+      '- Parallelizable work: switch to orchestrator and ask it to delegate',
+      '  workers with requirements, paths, and the milestone Git baseline.',
+      '- Independent verification: ask for a review worker at a Git baseline.',
+      '',
+      'Full launcher/setup is pending: use the Pi CLI with this extension',
+      'installed. A help-only dispatch bin prints the short overview with',
+      'dispatch --help (or -h).',
+    ],
+  },
+  {
+    id: 'agents-models',
+    title: 'Agents and models',
+    lines: [
+      'Dispatch roles (Pi-provided /model and /thinking stay available):',
+      '- /agent [orchestrator|general|fast|review] (Dispatch): select role.',
+      '  No arg in TUI opens the picker; without UI prints Active + choices.',
+      '- /dispatch or /piastra (Dispatch alias pair, same handler): role summary.',
+      '- Ctrl+Shift+A (Dispatch shortcut, editor focused): cycle agent.',
+      '- Shift+Tab (Dispatch editor override): cycle agents. Shadows the',
+      '  native thinking-cycle on this key; use Ctrl+T for thinking instead.',
+      '',
+      'Role tips:',
+      '- orchestrator: only role that can delegate to workers. Coordinates,',
+      '  assigns non-conflicting file ownership, runs or orders checks.',
+      '- general: implementation and debugging directly with the user.',
+      '- fast: docs, research, precise edits.',
+      '- review: read-only tools plus constrained check execution. Cannot edit',
+      '  source or publish notes. Not a filesystem sandbox: trusted check',
+      '  commands may write artifacts.',
+      '',
+      'Models:',
+      '- Each role keeps its own model + thinking selection; switching roles',
+      '  applies that selection, and /model or thinking changes persist',
+      '  per role (branch history wins over cross-session prefs).',
+      '- If a role model is unavailable, activation errors and the previous',
+      '  agent is retained. No automatic fallback is used.',
+      '- Codex-backed roles use the configured provider/model id as shown by',
+      '  /dispatch; allowance/billing follows your normal Pi auth. If auth',
+      '  fails, use Pi-provided /login to configure the provider (for',
+      '  example Codex or an API key) and /model to pick an installed model.',
+    ],
+  },
+  {
+    id: 'workers-tasks',
+    title: 'Workers, tasks, and queue',
+    lines: [
+      'Delegation (orchestrator only; ask the orchestrator in plain words):',
+      '- Workers run concurrently with no worker-count cap, including writers.',
+      '- Roles: general (build/debug), fast (docs/research/edits),',
+      '  review (independent Git review at a stable baseline).',
+      '- Read access inspects (git, fetch, web search, checks, note reading);',
+      '  write access additionally edits files and publishes notes.',
+      '- Workers get only your task text plus project instructions, never the',
+      '  parent conversation. Include requirements, paths, and the milestone',
+      '  Git baseline. Transcripts save under <agentDir>/piastra/runs.',
+      '- Shared notes: list_notes/read_note for all; publishing needs write',
+      '  access. Notes are untrusted and may be stale.',
+      '',
+      'Watching workers:',
+      '- /workers (Dispatch): live worker overlay. Ctrl+X then w is the same.',
+      '- Ctrl+Shift+W (Dispatch shortcut, editor focused): same overlay.',
+      '- Inside the worker detail: Left/Right/Tab/Shift+Tab cycle sibling',
+      '  workers, Up returns to the parent list, Down returns to the worker',
+      '  picker, p focuses prompt/output, PgUp/PgDn j/k Home/End scroll,',
+      '  Ctrl+O expands tools, Esc closes.',
+      '',
+      'Queue (pi-queue extension):',
+      '- /q <prompt> (Pi-queue): queue a follow-up. Idle parks it paused',
+      '  (resume with submit on the empty composer); mid-run it dispatches',
+      '  at the run tail. Use for "do this next".',
+      '- /st <prompt> (Pi-queue): steer the current segment. Idle with no',
+      '  backlog starts the run at once; idle with backlog joins the timeline',
+      '  in order; active run steers it. Use for "change direction now".',
+      '- /pause (Pi-queue): graceful pause at the next tool boundary; idle',
+      '  with an empty queue reports nothing to pause.',
+      '- /queue-drain (Pi-queue; alias /piastra-queue-drain): drain every',
+      '  queued message into the run as steering, in timeline order.',
+      '',
+      'Guard: switching sessions while workers run, or during compaction or',
+      'a branch summary, is blocked with a warning until it finishes.',
+    ],
+  },
+  {
+    id: 'worktrees-sessions',
+    title: 'Worktrees and sessions',
+    lines: [
+      'Worktrees (pi-worktree extension):',
+      '- /worktree (alias /wt): branch-linked worktree sessions.',
+      '- Subcommands: ls, add, open, resume, rm, pr (plus help).',
+      '- Never replaces the session while delegated workers run or while',
+      '  compaction/branch summarization is active (same guard as above).',
+      '- Sessions left with zero messages are pruned, not kept as "(no messages)".',
+      '',
+      'Sessions (Pi-provided commands):',
+      '- /new (Pi-provided): start a fresh session.',
+      '- /resume (Pi-provided): resume a different session. Fresh work starts',
+      '  with /new; continuing earlier work resumes with /resume.',
+      '- /session (Pi-provided): show session info and stats.',
+      '- /name (Pi-provided): set the session display name.',
+      '- /tree, /compact, /fork (Pi-provided): branch, compact, fork.',
+      '- /reload (Pi-provided): reload extensions after config changes.',
+      '- Session titles are set automatically from the first reply unless',
+      '  config/agents.json sets "autoTitle": false. Worker transcripts are',
+      '  never titled.',
+      '',
+      'When to use what:',
+      '- Risky parallel line of work: /worktree first, then delegate inside it.',
+      '- Long context: /compact before delegating reviews at a baseline.',
+    ],
+  },
+  {
+    id: 'shortcuts',
+    title: 'Shortcuts',
+    lines: [
+      'Dispatch editor keys (docs/shortcuts.md; editor-focus only, no global',
+      'keybindings.json writes, configurable native bindings keep working):',
+      '- Shift+Tab: cycle Dispatch agents (Dispatch override).',
+      '- Ctrl+T: native thinking-level cycle.',
+      '- Ctrl+O: expand tool output (compact-transcript claims it in compact',
+      '  mode, else native tool-output expand).',
+      '- Ctrl+V / Alt+V: native clipboard paste (Alt+V when the terminal eats',
+      '  Ctrl+V). Images paste as [Image #N] placeholders.',
+      '- Ctrl+X leader (2s, Esc cancels): t toggle thinking display,',
+      '  y copy last message, a agent picker, w worker overlay,',
+      '  m model picker (same as Ctrl+L / /model).',
+      '- /hotkeys (Pi-provided): show all native keyboard shortcuts.',
+      '',
+      'Dispatch shortcuts (work when the editor is focused; a focused',
+      'overlay or picker owns its own keys while open):',
+      '- Ctrl+Shift+A: cycle agent. Ctrl+Shift+W: worker overlay.',
+      '',
+      'Native Pi keys Dispatch does not override:',
+      '- Ctrl+L or /model (Pi-provided): model picker.',
+      '- Enter submit, Alt+Enter queued follow-up, Esc interrupt/close.',
+      '',
+      'Worker viewer keys (/workers open):',
+      '- Up/Down picker select (Up at first wraps to last); Enter/Right open.',
+      '- Left/Right/Tab/Shift+Tab cycle siblings; Up back to parent;',
+      '  Down back to picker; Esc close.',
+      '- p prompt/output focus; PgUp/PgDn j/k Home/End scroll; Ctrl+O tools.',
+    ],
+  },
+  {
+    id: 'troubleshooting',
+    title: 'Troubleshooting and safety',
+    lines: [
+      '- "Wait for the current turn to finish": the agent is busy. Stop the',
+      '  run or wait before /agent or Shift+Tab switches.',
+      '- "Only the orchestrator can delegate": switch to orchestrator first,',
+      '  then ask it to delegate in plain words.',
+      '- "Cannot activate <model>. Previous agent retained; no fallback',
+      '  used.": pick an installed model with Pi-provided /model; nothing',
+      '  auto-switches.',
+      '- Sign-in or key problems (for example Codex or an API key): use',
+      '  Pi-provided /login to configure the provider, then /model to pick',
+      '  an installed model. Nothing falls back or onboards automatically.',
+      '- "N workers still running...": wait or cancel the delegate call',
+      '  before switching sessions. Same for compaction/branch-summary waits.',
+      '- "Dispatch single delegation policy": ask the orchestrator to use its',
+      '  delegate tool, not upstream subagent/delegate_task tools (hard-blocked).',
+      '',
+      'Safety facts:',
+      '- Worker read/write split is a tool allowlist, NOT a security sandbox.',
+      '- run_checks executes trusted workspace code and may mutate files or',
+      '  create artifacts; review workers run checks under the same caveat.',
+      '- Web content (fetch_url/web_search) is untrusted reference material.',
+      '- No shell/staging/commit path exists in inspect_git by design.',
+    ],
+  },
+  {
+    id: 'commands',
+    title: 'All commands',
+    lines: [
+      'Dispatch (this extension):',
+      '- /dispatch, /piastra (same handler): role/model summary.',
+      '- /agent [role] (Dispatch): select orchestrator|general|fast|review.',
+      '- /workers (Dispatch): live worker overlay.',
+      '- /dispatch-help [section] (Dispatch): this help; TUI overlay, else',
+      '  plain text via notify. Sections: ' + 'getting-started, agents-models, workers-tasks, worktrees-sessions, shortcuts, troubleshooting, commands.',
+      '',
+      'Queue (pi-queue, managed):',
+      '- /q <prompt>: follow-up (idle parks paused).',
+      '- /st <prompt>: steer (idle no-backlog starts; active steers).',
+      '- /pause: graceful pause at tool boundary.',
+      '- /queue-drain, /piastra-queue-drain (same handler): drain queue.',
+      '',
+      'Worktrees (pi-worktree, managed): /worktree, /wt (same handler).',
+      'Subcommands: ls, add, open, resume, rm, pr (plus help).',
+      'Optional managed addons (only if installed): /todos (pi-todo),',
+      '/atelier (Pi Atelier: /atelier display, /atelier sidebar [on|off],',
+      '/atelier sidebar tools [on|off]; Alt+A toggles when configured,',
+      'Ctrl+Shift+R resizes the visible sidebar).',
+      '',
+      'Pi-provided (labels say Pi; behavior is Pi native):',
+      '- /new /resume /session /name /tree /compact /fork /model /thinking',
+      '  /reload /login /logout /trust /hotkeys /settings /share /export.',
+      '- Native shortcuts are configurable; Dispatch overrides only the',
+      '  editor keys listed under Shortcuts while the main editor is focused.',
+    ],
+  },
+];
+
+export function sectionIds() {
+  return helpSections.map(s => s.id);
+}
+
+function findSection(sectionId) {
+  return helpSections.find(s => s.id === sectionId);
+}
+
+export function formatHelp(sectionId = 'all') {
+  if (sectionId === 'all') {
+    return helpSections.map(s => `## ${s.title}\n${s.lines.join('\n')}`).join('\n\n');
+  }
+  const section = findSection(sectionId);
+  if (!section) {
+    return `Unknown help section "${sectionId}". Available: ${sectionIds().join(', ')}.`;
+  }
+  return `## ${section.title}\n${section.lines.join('\n')}`;
+}
+
+export function formatTerminalHelp() {
+  return [
+    'Dispatch — commands and shortcuts',
+    '',
+    'Usage: dispatch --help | -h',
+    '',
+    'Roles: /agent [orchestrator|general|fast|review]; /dispatch shows models.',
+    'Workers: ask the orchestrator to delegate; /workers watches live output.',
+    'Queue: /q <prompt> follow-up (idle parks paused); /st <prompt> steer',
+    '  (idle no-backlog starts, active steers); /pause; /queue-drain.',
+    'Sessions: /worktree (/wt) ls/add/open/resume/rm/pr; Pi: /new fresh,',
+    '  /resume resume, /session info, /name rename, /model, /reload, /compact.',
+    'Keys: Shift+Tab cycle agents; Ctrl+T thinking; Ctrl+X then t/y/a/w/m;',
+    '  Ctrl+Shift+A agent, Ctrl+Shift+W workers (editor focused);',
+    '  /workers detail: Left/Right/Tab/Shift+Tab siblings, Up parent,',
+    '  Down picker; /hotkeys lists native bindings.',
+    '',
+    'Full launcher/setup is pending; this is the short current',
+    'command/key overview. /dispatch-help [section] prints full text',
+    'outside the TUI.',
+    'Sections: ' + sectionIds().join(', ') + '.',
+  ].join('\n');
+}

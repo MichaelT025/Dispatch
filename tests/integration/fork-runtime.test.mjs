@@ -79,6 +79,7 @@ test('fork SDK sessions load Dispatch with canonical and legacy commands and onl
     const commands = extensions.flatMap(extension => [...extension.commands.keys()]);
     assert.ok(commands.includes('dispatch'), 'canonical summary command is loaded');
     assert.ok(commands.includes('piastra'), 'legacy summary command is loaded');
+    assert.ok(commands.includes('dispatch-help'), 'help command is loaded');
     ({ session } = await sdk.createAgentSessionFromServices({
       services,
       sessionManager: sdk.SessionManager.inMemory(root), // no session files written
@@ -94,6 +95,10 @@ test('fork SDK sessions load Dispatch with canonical and legacy commands and onl
     // command as a prompt. These commands make no model requests.
     await session.prompt('/dispatch');
     await session.prompt('/piastra');
+    const beforeHelp = [...session.messages];
+    await session.prompt('/dispatch-help');
+    await session.prompt('/dispatch-help shortcuts');
+    assert.deepEqual(session.messages, beforeHelp, 'help never enters model conversation history');
     await session.prompt('/agent general');
     assert.equal(session.model?.id, 'glm-5.3-flash');
   } finally {

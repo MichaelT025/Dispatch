@@ -21,6 +21,7 @@ type FooterItemId =
 	| "activity"
 	| "model"
 	| "thinking"
+	| "tip"
 	| "git"
 	| "input"
 	| "output"
@@ -42,6 +43,7 @@ interface FooterItem {
 const DROP = {
 	brand: 0,
 	status: 0,
+	tip: 5,
 	git: 10,
 	thinking: 10,
 	cost: 20,
@@ -206,6 +208,21 @@ function buildItems(
 					full: rendered,
 					compact: rendered,
 					dropRank: DROP.thinking,
+					required: false,
+				});
+			}
+			// Managed Dispatch tip: immediately after model + thinking, only when the
+			// model segment is visible with an actual model and the live
+			// extension command dispatch-help is available. Muted, identical in
+			// compact density, droppable before model/thinking on narrow widths.
+			if (model && state.dispatchHelpAvailable === true) {
+				const rendered = palette.paint("muted", "Tip: run /dispatch-help");
+				add({
+					id: "tip",
+					zone: "left",
+					full: rendered,
+					compact: rendered,
+					dropRank: DROP.tip,
 					required: false,
 				});
 			}

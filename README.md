@@ -14,7 +14,16 @@ Dispatch (formerly PiAstra) is a lightweight Pi setup with Astra planning, OpenC
 - Launchers prefer `DISPATCH_PORT`, `DISPATCH_FORK_DIR`, `DISPATCH_FORK_PORT`, `DISPATCH_TRIAL_PORT` and `DISPATCH_TAU_PORT`, with the corresponding `PIASTRA_*` names as fallbacks. Empty values count as unset; invalid preferred values report an error instead of falling back.
 - GitHub repository names and the `../PiAstra-web-ui` sibling path remain unchanged. Dispatch Web retains its `pi-web-ui` executable/service names, `PI_WEB_*` configuration and browser storage keys.
 
-Package names `@michaelt025/dispatch` and `@michaelt025/dispatch-web` are provisional and unpublished; scope ownership must be confirmed before release. A standalone `dispatch` executable and isolated `~/.dispatch/agent` state are planned, **not implemented yet**. Use the checkout installation below.
+Package names `@michaelt025/dispatch` and `@michaelt025/dispatch-web` are provisional and unpublished; scope ownership must be confirmed before release. The `dispatch` entry point currently provides **help only** (`--help` / `-h`); setup, full CLI/WebUI launch modes and isolated `~/.dispatch/agent` state are **not implemented yet**. Use the checkout installation below.
+
+## Help
+
+- In Pi with Dispatch loaded: **`/dispatch-help`** opens a read-only guide to commands, keyboard shortcuts and practical usage tips. Use **`/dispatch-help shortcuts`** to jump to a section. `/dispatch` remains the role/model summary.
+- Browse with **Up/Down**, **Enter**; scroll with **PgUp/PgDn**, **j/k**, **Home/End**; **Left/b** returns to sections; **Esc/Ctrl+C** closes. Help does not send a model request or add to the conversation.
+- The maintained Atelier footer shows **`<model> · <reasoning> · Tip: run /dispatch-help`** only when Dispatch help is registered. The hint yields space on narrow terminals and is absent in standalone Atelier/plain Pi.
+- Terminal overview: **`node bin/dispatch.mjs --help`** (or `-h`) from this checkout. The package maps this file to `dispatch`, but it is not published or globally installed yet. With no arguments it also prints help; `dispatch setup` and `dispatch --web` are not available yet.
+
+After pulling these changes, re-run `npm run install:cli` (add `-- --atelier` for the optional Atelier footer) and restart Pi to update the managed copies. This legacy installer changes the selected Pi configuration; it does **not** yet provide the planned separation between plain Pi and Dispatch.
 
 ## Use from any directory
 

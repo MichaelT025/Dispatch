@@ -20,6 +20,8 @@ import { createWorkerBridge } from './worker-bridge.mjs';
 import { createAutoTitler } from './session-title.mjs';
 import { removeEmptySession } from '../pi-worktree/empty-sessions.mjs';
 import { createWorkerPanel } from './worker-panel.ts';
+import { formatHelp, formatTerminalHelp, helpSections, sectionIds } from './help.mjs';
+import { createHelpView, helpOverlayOptions } from './help-view.ts';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const config = JSON.parse(readFileSync(path.join(root, 'config/agents.json'), 'utf8'));
@@ -179,6 +181,33 @@ export default function (pi: ExtensionAPI) {
   pi.registerCommand('piastra', {
     description: 'Show Dispatch roles and delegation availability',
     handler: showRoles
+  });
+  let helpOpen = false;
+  const openHelp = async (args: string, ctx: any) => {
+    const wanted = args.trim().toLowerCase();
+    const sectionId = wanted || undefined;
+    if (sectionId && sectionId !== 'all' && !sectionIds().includes(sectionId)) {
+      ctx.ui.notify(formatHelp(sectionId), 'warning');
+      return;
+    }
+    // Plain-text path for RPC/print/JSON: notify only, no custom UI and no
+    // model-context writes. Unknown sections list the available ids.
+    if (ctx.mode !== 'tui') {
+      ctx.ui.notify(sectionId ? formatHelp(sectionId) : formatTerminalHelp(), 'info');
+      return;
+    }
+    if (helpOpen) return;
+    helpOpen = true;
+    try {
+      await ctx.ui.custom((tui: any, theme: any, _keys: any, done: any) =>
+        createHelpView(tui, theme, done, helpSections, sectionId && sectionIds().includes(sectionId) ? sectionId : undefined), helpOverlayOptions);
+    } catch (error: any) {
+      ctx.ui.notify(`Dispatch help is unavailable: ${error?.message || error}`, 'error');
+    } finally { helpOpen = false; }
+  };
+  pi.registerCommand('dispatch-help', {
+    description: 'Browse Dispatch help: sections, commands, shortcuts (plain text outside the TUI)',
+    handler: openHelp,
   });
   pi.registerTool({
     name: 'delegate', label: 'Dispatch workers',

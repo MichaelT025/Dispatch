@@ -7,6 +7,9 @@
   "engines": {
     "node": ">=22.19.0"
   },
+  "bin": {
+    "dispatch": "bin/dispatch.mjs"
+  },
   "scripts": {
     "setup": "node scripts/setup.mjs",
     "start": "node scripts/start.mjs",

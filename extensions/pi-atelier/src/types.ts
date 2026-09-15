@@ -152,6 +152,8 @@ export interface AtelierState {
 /** Footer render input: runtime state plus the live response metrics the runtime does not own. */
 export interface FooterState extends AtelierState {
 	performance?: ResponsePerformance;
+	/** True only when pi.getCommands() currently lists extension command dispatch-help. Computed per render. */
+	dispatchHelpAvailable?: boolean;
 }
 
 export const DEFAULT_CONFIG: AtelierConfig = {

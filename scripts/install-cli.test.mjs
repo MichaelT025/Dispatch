@@ -75,6 +75,8 @@ const supportFiles = [
   'extensions/piastra/worker-bridge.mjs',
   'extensions/piastra/session-title.mjs',
   'extensions/piastra/worker-view.ts',
+  'extensions/piastra/help.mjs',
+  'extensions/piastra/help-view.ts',
   'extensions/piastra/worker-panel.ts',
   'extensions/piastra/worker-render.ts',
   'extensions/piastra/shortcuts.ts',
@@ -1246,6 +1248,10 @@ test('real todo + atelier + piastra loader smoke: single todo tool, no overlay s
     // The completed worker panel module ships with the managed piastra copy.
     const installedPiastra = path.join(agentDir, 'piastra', 'package', 'extensions', 'piastra');
     await readFile(path.join(installedPiastra, 'worker-panel.ts'), 'utf8');
+    for (const file of ['help.mjs', 'help-view.ts']) {
+      assert.equal(await readFile(path.join(installedPiastra, file), 'utf8'),
+        await readFile(path.join(repoRoot, 'extensions/piastra', file), 'utf8'));
+    }
 
     // Load ALL managed extensions through Pi's own extension loader (jiti,
     // with the same aliases pi uses for @earendil-works packages, typebox, and
@@ -1265,6 +1271,16 @@ test('real todo + atelier + piastra loader smoke: single todo tool, no overlay s
       assert.deepEqual(result.errors, [], JSON.stringify(result.errors));
       const loaded = result.extensions.filter((e) => e.path.startsWith(path.join(agentDir, 'piastra', 'package')));
       assert.equal(loaded.length, installed.extensions.length - 1, 'every managed extension entry must load (the fake /existing entry is not loaded)');
+
+      // Help must work from the installed copy, not just the checkout.
+      const helpExtensions = loaded.filter((e) => e.commands.has('dispatch-help'));
+      assert.equal(helpExtensions.length, 1);
+      const notices = [];
+      await helpExtensions[0].commands.get('dispatch-help').handler('shortcuts', {
+        mode: 'rpc', hasUI: true, ui: { notify: (text) => notices.push(text) },
+      });
+      assert.equal(notices.length, 1);
+      assert.match(notices[0], /Shift\+Tab/);
 
       // Exactly one extension registers the todo tool across the whole set.
       const todoExtensions = loaded.filter((e) => e.tools.has('todo'));
