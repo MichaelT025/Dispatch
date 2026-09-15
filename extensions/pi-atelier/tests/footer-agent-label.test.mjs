@@ -26,7 +26,7 @@ const footerPath = path.join(repoRoot, "extensions", "pi-atelier", "src", "foote
 const typesPath = path.join(repoRoot, "extensions", "pi-atelier", "src", "types.ts");
 const ROLES = ["orchestrator", "general", "fast", "review"];
 
-const COLORS = { accent: 35, success: 32, mdHeading: 33, thinkingLow: 34, warning: 93, error: 31 };
+const COLORS = { accent: 35, success: 32, mdHeading: 33, thinkingLow: 34, thinkingMedium: 94, warning: 93, error: 31 };
 const theme = {
 	fg: (color, text) => `\x1b[${COLORS[color] ?? 37}m${text}\x1b[0m`,
 	bold: (t) => t,
@@ -133,7 +133,7 @@ test("agent label colors match requested roles in both densities and ready/worki
 	const expected = {
 		orchestrator: { rgb: '177;140;255', themeCode: 35 },
 		general: { rgb: '255;220;100', themeCode: 93 },
-		fast: { rgb: '110;168;254', themeCode: 34 },
+		fast: { rgb: '147;197;253', themeCode: 94 },
 		review: { rgb: '126;211;137', themeCode: 32 },
 	};
 	for (const [role, color] of Object.entries(expected)) {
@@ -176,10 +176,10 @@ test("live agent changes update the color as well as the name", () => {
 test("working role keeps its color and animation; timer cleaned up", () => {
 	const workingRole = line(state({ activity: "working", extensionStatuses: ["Agent: fast"] }));
 	const workingPlain = line(state({ activity: "working", workingLabel: "X" }));
-	assert.ok(workingRole.includes("\x1b[34m● FAST"), strip(workingRole));
+	assert.ok(workingRole.includes("\x1b[94m● FAST"), strip(workingRole));
 	assert.ok(workingPlain.includes("\x1b[33m● X"), 'standalone working color is unchanged');
 	const readyRole = line(state({ activity: "ready", extensionStatuses: ["Agent: fast"] }));
-	assert.ok(readyRole.includes("\x1b[34m● FAST"), strip(readyRole));
+	assert.ok(readyRole.includes("\x1b[94m● FAST"), strip(readyRole));
 
 	const origSet = globalThis.setInterval, origClear = globalThis.clearInterval;
 	let created = 0, cleared = 0, unsub = 0;

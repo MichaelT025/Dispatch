@@ -30,9 +30,9 @@ const clean = (value: unknown) => String(value ?? '')
 
 export type PanelRow = { id?: number; role: string; status: string; started: number; ended?: number };
 
-// Roles reuse existing theme colors: general=warning/yellow, fast=thinkingLow/blue,
+// Roles reuse existing theme colors: general=warning/yellow, fast=thinkingMedium/light blue,
 // review=success/green. Unknown roles fall back to muted; failures are red.
-const ROLE_STYLES: Record<string, string> = { general: 'warning', fast: 'thinkingLow', review: 'success' };
+const ROLE_STYLES: Record<string, string> = { general: 'warning', fast: 'thinkingMedium', review: 'success' };
 
 export function spinnerFrame(index: number) {
   const frames = SPINNER_FRAMES.length;

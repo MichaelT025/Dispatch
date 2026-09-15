@@ -83,7 +83,7 @@ checks do not constitute live terminal or scrolling verification.
 
 The managed fork includes the earlier agent-name customization: the activity
 label below the editor shows the active PiAstra role instead of READY/WORKING,
-with role colors: **orchestrator purple, general yellow, fast blue, review green**.
+with role colors: **orchestrator purple, general yellow, fast light blue, review green**.
 Working animation remains; warning/error colors take precedence. Without
 PiAstra it falls back to Atelier's normal activity label. This was the only
 source modification found when auditing the old npm installation against the

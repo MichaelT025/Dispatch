@@ -51,7 +51,7 @@ test('pure renderer: icons, role names, timers and width-safe tree layout', () =
   const styled = renderSubagentPanel(rows, { fg: (style, text) => `[${style}]${text}` }, 80, { spinnerFrame: 3, now: 6000, runOpen: true });
   assert.match(styled[0], /^\[accent\]●/);
   assert.match(styled[1], /\[accent\]⠸ \[warning\]general/);
-  assert.match(styled[2], /\[success\]✓ \[thinkingLow\]fast/);
+  assert.match(styled[2], /\[success\]✓ \[thinkingMedium\]fast/);
   assert.match(styled[3], /\[error\]✗ \[success\]review/);
   assert.match(styled[4], /\[error\]⊘/);
   assert.match(styled[5], /\[error\]⏹/);

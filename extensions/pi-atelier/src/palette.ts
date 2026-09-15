@@ -42,14 +42,14 @@ const FIXED_DARK: Record<PaletteRole, Rgb> = {
 	error: [255, 93, 115],
 	agentOrchestrator: [177, 140, 255],
 	agentGeneral: [255, 220, 100],
-	agentFast: [110, 168, 254],
+	agentFast: [147, 197, 253],
 	agentReview: [126, 211, 137],
 };
 
 const UNNAMED_THEME: Record<PaletteRole, string> = {
 	agentOrchestrator: "accent",
 	agentGeneral: "warning",
-	agentFast: "thinkingLow",
+	agentFast: "thinkingMedium",
 	agentReview: "success",
 	accent: "accent",
 	primary: "text",
