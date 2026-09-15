@@ -4,8 +4,13 @@ import path from 'node:path';
 import { existsSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
+import { minimatch } from 'minimatch';
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const agentDir = process.env.PI_CODING_AGENT_DIR || path.join(homedir(), '.pi', 'agent');
+// The managed Atelier fork is strictly opt-in: pass --atelier once to install
+// it. After that, reruns without the flag keep updating the managed copy
+// because its registration is already present in settings.json.
+const atelierOptIn = process.argv.slice(2).includes('--atelier');
 await mkdir(agentDir, { recursive: true });
 const target = path.join(agentDir, 'settings.json');
 let settings = {};
@@ -15,7 +20,7 @@ try {
 } catch (error) { if (error.code !== 'ENOENT') throw error; }
 const installed = path.join(agentDir, 'piastra', 'package');
 for (const dir of ['extensions/piastra', 'extensions/pi-ui', 'extensions/pi-worktree', 'config', 'roles']) await mkdir(path.join(installed, dir), { recursive: true });
-for (const file of ['extensions/piastra/index.ts', 'extensions/piastra/policy.mjs', 'extensions/piastra/agents.mjs', 'extensions/piastra/prefs.mjs', 'extensions/piastra/guard.mjs', 'extensions/piastra/progress.mjs', 'extensions/piastra/sidebar.mjs', 'extensions/piastra/worker-bridge.mjs', 'extensions/piastra/worker-view.ts', 'extensions/piastra/worker-render.ts', 'extensions/piastra/shortcuts.ts', 'extensions/piastra/image-paste.ts', 'extensions/piastra/custom-tools.ts', 'extensions/piastra/notes.mjs', 'extensions/piastra/web.mjs', 'extensions/piastra/checks.mjs', 'extensions/piastra/windows-check-job.ps1', 'extensions/pi-worktree/git-worktree.ts', 'extensions/pi-worktree/LICENSE', 'config/agents.json', 'config/checks.json', ...['orchestrator', 'general', 'fast', 'review'].map(role => `roles/${role}.md`)]) {
+for (const file of ['extensions/piastra/index.ts', 'extensions/piastra/policy.mjs', 'extensions/piastra/agents.mjs', 'extensions/piastra/prefs.mjs', 'extensions/piastra/guard.mjs', 'extensions/piastra/progress.mjs', 'extensions/piastra/sidebar.mjs', 'extensions/piastra/worker-bridge.mjs', 'extensions/piastra/worker-view.ts', 'extensions/piastra/worker-panel.ts', 'extensions/piastra/worker-render.ts', 'extensions/piastra/shortcuts.ts', 'extensions/piastra/image-paste.ts', 'extensions/piastra/custom-tools.ts', 'extensions/piastra/notes.mjs', 'extensions/piastra/web.mjs', 'extensions/piastra/checks.mjs', 'extensions/piastra/windows-check-job.ps1', 'extensions/pi-worktree/git-worktree.ts', 'extensions/pi-worktree/LICENSE', 'config/agents.json', 'config/checks.json', ...['orchestrator', 'general', 'fast', 'review'].map(role => `roles/${role}.md`)]) {
   await copyFile(path.join(root, file), path.join(installed, file));
 }
 // The installed copy needs plain npm runtime dependencies that Pi's loader
@@ -111,15 +116,123 @@ if (!existsSync(queueSourceIndex)) {
 const queueTarget = path.join(installed, 'extensions', 'pi-queue');
 const queueIndex = path.join(queueTarget, 'index.ts');
 // Vendored forks ship runtime files only: tests never load in the installed copy.
-const vendoredRuntimeFilter = (source) =>
-  !/(^|[\\/])__tests__([\\/]|$)/.test(source) && !/\.test\.[a-z]+$|\.spec\.[a-z]+$/i.test(source);
-await cp(queueSource, queueTarget, { recursive: true, force: true, filter: vendoredRuntimeFilter });
+// Root-relative so a checkout nested under `tests`/`__tests__` ancestors (e.g.
+// C:/tests/PiAstra) does not filter the fork root itself: only paths relative
+// to each fork source are tested.
+const vendoredRuntimeFilter = (sourceRoot) => (source) => {
+  const relative = path.relative(sourceRoot, source);
+  return !/(^|[\\/])(__tests__|tests)([\\/]|$)/.test(relative) && !/\.test\.[a-z]+$|\.spec\.[a-z]+$/i.test(relative);
+};
+await cp(queueSource, queueTarget, { recursive: true, force: true, filter: vendoredRuntimeFilter(queueSource) });
 // Vendor the compact-transcript fork runtime files the same way: extension
 // index + dependencies + LICENSE/README/package.json, tests excluded.
 const compactSource = path.join(root, 'extensions', 'pi-compact-transcript');
 const compactTarget = path.join(installed, 'extensions', 'pi-compact-transcript');
 const compactIndex = path.join(compactTarget, 'index.ts');
-await cp(compactSource, compactTarget, { recursive: true, force: true, filter: vendoredRuntimeFilter });
+await cp(compactSource, compactTarget, { recursive: true, force: true, filter: vendoredRuntimeFilter(compactSource) });
+// Vendor the managed Atelier fork runtime files the same way: full npm layout
+// (extensions/index.ts, src/, assets/, LICENSE, README.md, package.json),
+// tests excluded. Copies happen here, before any settings.json mutation, so a
+// missing fork can never leave the config pointing at absent code.
+const atelierManagedIndex = path.join(installed, 'extensions', 'pi-atelier', 'extensions', 'index.ts');
+const atelierAlreadyManaged = (settings.extensions || []).includes(atelierManagedIndex);
+const atelierActive = atelierOptIn || atelierAlreadyManaged;
+if (atelierActive) {
+  const atelierSource = path.join(root, 'extensions', 'pi-atelier');
+  const atelierSourceIndex = path.join(atelierSource, 'extensions', 'index.ts');
+  if (!existsSync(atelierSourceIndex)) {
+    throw new Error(
+      `Missing pi-atelier fork runtime: ${atelierSourceIndex}\n` +
+        'The vendored fork (extensions/pi-atelier/extensions/index.ts) is required for the managed Atelier installation; refusing to update settings.json.',
+    );
+  }
+  const atelierTarget = path.join(installed, 'extensions', 'pi-atelier');
+  await cp(atelierSource, atelierTarget, { recursive: true, force: true, filter: vendoredRuntimeFilter(atelierSource) });
+}
+// The managed pi-todo fork (@juicesharp/rpiv-todo): it migrates automatically
+// when the user has an enabled upstream npm entry, and afterwards stays in sync
+// on every rerun because the managed registration itself counts as active.
+// Without an enabled upstream entry and without a managed registration, todo
+// packages/extensions are left completely alone (no copy, no disable, no
+// registration) so users without rpiv-todo never gain it implicitly.
+const todoManagedIndex = path.join(installed, 'extensions', 'pi-todo', 'index.ts');
+const todoSource = path.join(root, 'extensions', 'pi-todo');
+const todoSourceIndex = path.join(todoSource, 'index.ts');
+const todoSourceVendorIndex = path.join(todoSource, 'vendor', 'rpiv-config', 'index.ts');
+const upstreamTodo = /^npm:@juicesharp\/rpiv-todo(?:@.*)?$/i;
+const todoEntrySource = (entry) => (typeof entry === 'string' ? entry : entry?.source);
+// The upstream npm package lives at agentDir/npm/node_modules/@juicesharp/
+// rpiv-todo (Pi's user-scope npm root) and its manifest declares exactly one
+// extension file, index.ts. Whether a settings entry actually enables that
+// file follows Pi's own pattern semantics (dist/core/package-manager.js
+// applyPatterns), mirrored here with minimatch instead of importing Pi
+// internals: a pattern is matched against the file's root-relative posix
+// path, its basename, and its absolute posix path (root-relative and basename
+// coincide for the sole file). Plain glob patterns include; with no plain
+// pattern every file starts enabled. `!glob` excludes. `+path` and `-path`
+// are exact overrides: `+` restores a file excluded earlier, `-` finally
+// removes it even after a `+`. Applied in that fixed order.
+const todoUpstreamRoot = path.join(agentDir, 'npm', 'node_modules', '@juicesharp', 'rpiv-todo');
+const todoUpstreamFileRelative = 'index.ts';
+const todoUpstreamFileAbsolute = path.join(todoUpstreamRoot, todoUpstreamFileRelative).split(path.sep).join('/');
+const todoPatternGlob = (pattern) => {
+  const normalized = pattern.split(path.sep).join('/');
+  return minimatch(todoUpstreamFileRelative, normalized)
+    || minimatch(path.basename(todoUpstreamFileRelative), normalized)
+    || minimatch(todoUpstreamFileAbsolute, normalized);
+};
+const todoPatternExact = (pattern) => {
+  const normalized = (pattern.startsWith('./') || pattern.startsWith('.\\') ? pattern.slice(2) : pattern).split(path.sep).join('/');
+  return normalized === todoUpstreamFileRelative || normalized === todoUpstreamFileAbsolute;
+};
+const todoPatternsEnabled = (patterns) => {
+  const includes = [];
+  const excludes = [];
+  const forceIncludes = [];
+  const forceExcludes = [];
+  for (const pattern of patterns) {
+    if (pattern.startsWith('+')) forceIncludes.push(pattern.slice(1));
+    else if (pattern.startsWith('-')) forceExcludes.push(pattern.slice(1));
+    else if (pattern.startsWith('!')) excludes.push(pattern.slice(1));
+    else includes.push(pattern);
+  }
+  let enabled = includes.length === 0 ? true : includes.some(todoPatternGlob);
+  if (enabled && excludes.length > 0) enabled = !excludes.some(todoPatternGlob);
+  if (!enabled && forceIncludes.length > 0) enabled = forceIncludes.some(todoPatternExact);
+  if (enabled && forceExcludes.length > 0) enabled = !forceExcludes.some(todoPatternExact);
+  return enabled;
+};
+const todoEntryEnabled = (entry) => {
+  if (typeof entry === 'string') return true;
+  if (!entry || typeof entry !== 'object') return false;
+  if (entry.autoload === false) return false;
+  const patterns = entry.extensions;
+  if (patterns === undefined) return true;
+  if (!Array.isArray(patterns) || !patterns.every(pattern => typeof pattern === 'string')) return false;
+  if (patterns.length === 0) return false; // [] explicitly disables all resources
+  return todoPatternsEnabled(patterns);
+};
+const todoAlreadyManaged = (settings.extensions || []).includes(todoManagedIndex);
+const todoActive = (settings.packages || []).some(
+  (entry) => upstreamTodo.test(todoEntrySource(entry) || '') && todoEntryEnabled(entry),
+) || todoAlreadyManaged;
+if (todoActive) {
+  if (!existsSync(todoSourceIndex) || !existsSync(todoSourceVendorIndex)) {
+    throw new Error(
+      `Missing pi-todo fork runtime: ${todoSourceIndex}\n` +
+        'The vendored fork (extensions/pi-todo) with its essential dependency file\n' +
+        `(${todoSourceVendorIndex}) is required for the managed todo installation; refusing to update settings.json.`,
+    );
+  }
+  // Copy before any settings.json mutation so a half-installed fork can never
+  // be referenced by settings. Config/history/XDG layers are never touched: the
+  // vendored copy resolves rpiv-todo config exactly like upstream.
+  await cp(todoSource, path.join(installed, 'extensions', 'pi-todo'), {
+    recursive: true,
+    force: true,
+    filter: vendoredRuntimeFilter(todoSource),
+  });
+}
 const extension = path.join(installed, 'extensions', 'piastra', 'index.ts');
 const worktreeExtension = path.join(installed, 'extensions', 'pi-worktree', 'git-worktree.ts');
 const developmentPath = path.join(root, 'extensions', 'piastra', 'index.ts');
@@ -158,10 +271,53 @@ settings.packages = (settings.packages || []).map((entry) => {
   }
   return entry;
 });
+// The managed Atelier fork (opt-in via --atelier, then kept in sync by reruns
+// without the flag because the managed entry is already registered): register
+// the managed index exactly once, drop the current checkout's development
+// entry for this fork, and disable the upstream npm package's extension (bare
+// or versioned, string or object form) via extensions: [] so only the managed
+// copy loads. The package entry itself stays installed for updates and its
+// commands/docs, and the agent-dir config (pi-atelier.json) is never touched
+// here. Without opt-in and without an existing managed entry, Atelier
+// packages/settings are left completely alone.
+if (atelierActive) {
+  const developmentAtelierPath = path.join(root, 'extensions', 'pi-atelier', 'extensions', 'index.ts');
+  settings.extensions = [...new Set([
+    ...(settings.extensions || []).filter((p) => p !== developmentAtelierPath),
+    atelierManagedIndex,
+  ])];
+  const upstreamAtelier = /^npm:pi-atelier(?:@.*)?$/i;
+  settings.packages = (settings.packages || []).map((entry) => {
+    const source = typeof entry === 'string' ? entry : entry?.source;
+    if (upstreamAtelier.test(source || '')) {
+      return { ...(typeof entry === 'string' ? { source: entry } : entry), extensions: [] };
+    }
+    return entry;
+  });
+}
+// The managed pi-todo fork (migration conditions computed above): register the
+// managed index exactly once, drop the current checkout's development entry for
+// this fork, and disable every upstream npm entry (bare, versioned, or ranged;
+// string or object form) via extensions: [] while preserving the package entry
+// and its other fields. Nothing else — package config, history, other packages,
+// or the XDG config layer — is modified.
+if (todoActive) {
+  const developmentTodoPath = path.join(root, 'extensions', 'pi-todo', 'index.ts');
+  settings.extensions = [...new Set([
+    ...(settings.extensions || []).filter((p) => p !== developmentTodoPath),
+    todoManagedIndex,
+  ])];
+  settings.packages = (settings.packages || []).map((entry) => {
+    if (upstreamTodo.test(todoEntrySource(entry) || '')) {
+      return { ...(typeof entry === 'string' ? { source: entry } : entry), extensions: [] };
+    }
+    return entry;
+  });
+}
 const config = JSON.parse(await readFile(path.join(root, 'config/agents.json'), 'utf8')).orchestrator;
 const slash = config.model.indexOf('/');
 settings.defaultProvider = config.model.slice(0, slash);
 settings.defaultModel = config.model.slice(slash + 1);
 settings.defaultThinkingLevel = config.thinking;
 await writeFile(target, JSON.stringify(settings, null, 2) + '\n');
-console.log(`PiAstra installed in ${target}\nRun pi from any directory. /piastra shows the roles.\nStandalone extension copy: ${installed}\nRe-run this installer to update the installed code and role configuration.`);
+console.log(`PiAstra installed in ${target}\nRun pi from any directory. /piastra shows the roles.\nStandalone extension copy: ${installed}\nRe-run this installer to update the installed code and role configuration.${atelierActive ? '\nManaged Atelier fork installed and upstream npm:pi-atelier extension disabled.' : ''}${todoActive ? '\nManaged pi-todo fork installed and upstream npm:@juicesharp/rpiv-todo extension disabled.' : ''}`);

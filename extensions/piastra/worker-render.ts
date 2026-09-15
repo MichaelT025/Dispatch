@@ -83,27 +83,51 @@ export function renderTranscript(messages: any[], theme: any, width: number, exp
   return lines;
 }
 
-// The parent card is a bounded preview; /workers contains the complete conversation.
-export function createWorkerProgress(workers: any[], expanded: boolean, theme: any) {
+// Fallback for delegate results without worker details (for example an early
+// runtime throw from execute). Collapses raw/model-facing content to one
+// sanitized, width-bounded line so a multiline error can never spill into the
+// transcript. `expanded` is intentionally ignored; `isError` only selects the
+// error color. Never mutates `output`.
+export function createDelegateFallbackSummary(output: any, theme: any, isError?: boolean) {
+  const blocks = Array.isArray(output?.content) ? output.content : [];
+  const raw = blocks.filter((block: any) => block?.type === 'text').map((block: any) => String(block.text ?? '')).join('\n');
+  const collapsed = safe(raw).replace(/\s+/g, ' ').trim();
+  const concise = collapsed.slice(0, 260) + (collapsed.length > 260 ? '…' : '');
+  const summary = concise || (isError ? 'failed' : 'no result');
+  const style = isError ? 'error' : 'accent';
   return {
     invalidate() {},
     render(width: number) {
-      const lines: string[] = [];
-      for (const worker of workers) {
-        const seconds = Math.floor(((worker.ended || Date.now()) - worker.started) / 1000);
-        lines.push(truncateToWidth(theme.fg(statusStyle(worker.status), safe(`#${worker.id} ${worker.role} · ${worker.model} · ${worker.status} · ${seconds}s`)), width));
-        lines.push(truncateToWidth(theme.fg('muted', safe(worker.activity)), width));
-        if (expanded) {
-          lines.push(...plainLines(`Task: ${worker.task}`, width).slice(0, 2).map(line => theme.fg('dim', line)));
-          for (const recent of (worker.recent || []).slice(-4)) {
-            lines.push(truncateToWidth(theme.fg(recent.startsWith('✗') ? 'error' : 'toolOutput', safe(recent)), width));
-          }
-          if (worker.text) lines.push(...markdownLines(worker.text, width).slice(0, 6));
-        }
-        lines.push('');
+      return [truncateToWidth(theme.fg(style, `Delegate · ${summary}`), width)];
+    }
+  };
+}
+
+// Main-chat delegation stays compact: a single aggregate line. Expanded
+// per-worker detail lives in /workers (worker-view.ts), not here. The
+// `expanded` argument is kept for the renderResult call-site but ignored.
+export function createWorkerProgress(workers: any[], _expanded: boolean, theme: any) {
+  const list = Array.isArray(workers) ? workers : [];
+  const snapshot = list.map(worker => safe(worker?.status || 'unknown').replace(/\s+/g, ' ').toLowerCase().trim().slice(0, 32) || 'unknown');
+  return {
+    invalidate() {},
+    render(width: number) {
+      const counts = new Map<string, number>();
+      for (const status of snapshot) counts.set(status, (counts.get(status) ?? 0) + 1);
+      const order = ['completed', 'running', 'starting', 'failed', 'cancelled', 'interrupted'];
+      const parts: string[] = [];
+      for (const status of order) {
+        const count = counts.get(status);
+        if (count) { parts.push(`${count} ${status}`); counts.delete(status); }
       }
-      lines.push(truncateToWidth(theme.fg('dim', 'Ctrl+Shift+W: worker sessions · Ctrl+O: activity preview'), width));
-      return lines;
+      for (const [status, count] of [...counts.entries()].sort((a, b) => a[0].localeCompare(b[0]))) {
+        parts.push(`${count} ${status}`);
+      }
+      const summary = parts.length ? parts.join(' · ') : 'none';
+      const hasFailure = snapshot.some(status => ['failed', 'cancelled', 'interrupted'].includes(status));
+      const hasActive = snapshot.some(status => ['starting', 'running'].includes(status));
+      const style = hasFailure ? 'error' : list.length > 0 && !hasActive ? 'success' : 'accent';
+      return [truncateToWidth(theme.fg(style, `Workers · ${summary} · /workers for details`), width)];
     }
   };
 }

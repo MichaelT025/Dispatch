@@ -174,3 +174,37 @@ test('factory captures expanded draft so replacing an editor never strands image
   assert.equal(replacement.getText(), 'new unrelated text', 'initial draft is used only once');
   handlers.get('session_shutdown')();
 });
+
+test('image placeholders render inside Atelier and draft paths survive frame removal', async () => {
+  const { installAtelierEditor, clearAtelierEditor } = await import('../pi-atelier/src/editor.ts');
+  const handlers = new Map();
+  let factory;
+  let editor;
+  const ctx = { mode: 'tui', ui: {
+    getEditorComponent: () => factory,
+    getEditorText: () => editor?.getExpandedText() ?? '',
+    setEditorComponent(value) {
+      const draft = editor?.getText() ?? '';
+      factory = value;
+      editor = factory(tui, theme, keys());
+      editor.setText(draft);
+    },
+    notify() {},
+  } };
+  installShortcuts({ on: (name, callback) => handlers.set(name, callback) }, {
+    cycleAgents() {}, openAgentPicker() {}, openWorkers() {},
+  });
+  handlers.get('session_start')({}, ctx);
+  const token = {};
+  try {
+    assert.equal(installAtelierEditor(ctx, token), true);
+    editor.insertTextAtCursor(paths[0]);
+    assert.match(rendered(editor), /╭/);
+    assert.match(rendered(editor), /\[Image #1\]/);
+    assert.doesNotMatch(rendered(editor), /pi-clipboard|\[paste #/);
+    assert.equal(editor.getExpandedText(), paths[0]);
+    clearAtelierEditor(ctx, token);
+    assert.doesNotMatch(rendered(editor), /╭/);
+    assert.equal(editor.getExpandedText(), paths[0], 'replacement exports real paths, not stranded markers');
+  } finally { handlers.get('session_shutdown')(); }
+});

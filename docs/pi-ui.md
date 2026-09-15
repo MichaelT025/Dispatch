@@ -42,6 +42,68 @@ Restart Pi or run `/reload` after installing. Use `/atelier` or Alt+A for contro
 
 Ask the agent to “Track this task with todos,” and use `/todos` to inspect the planner. The optional `todo` tool remains available after PiAstra role switches. Other plugins' tools are not automatically admitted into role allowlists. Delegated workers retain their isolated tool sets; the parent owns the task plan.
 
+## Subagents above-editor panel
+
+While orchestrator workers run, a **Subagents** panel sits above the editor in the TODO overlay's style (heading, tree rows, trailing spacer): one row per worker with status icon, agent role and elapsed time. It accumulates only the current orchestrator run's workers across delegate batches and retries; completed, failed and cancelled rows stay visible until the next run or session reset. The panel shows at most 12 content lines and points overflow to `/workers`. It adds no polling timer and reuses the existing 250ms delegate updates.
+
+The main-chat delegation result stays a single aggregate line (`Workers · … · /workers for details`), even with **Ctrl+O**; full worker conversations and model outputs remain in `/workers`.
+
+## PiAstra-maintained Atelier fork (opt-in)
+
+`extensions/pi-atelier/` is based on the published **pi-atelier 0.10.1**
+release with its MIT license and recorded npm integrity hashes. The fork now
+adds editor cooperation so PiAstra shortcuts and Atelier's frame work together. See
+[the fork notes](../extensions/pi-atelier/FORK.md) and
+[provenance](../extensions/pi-atelier/UPSTREAM.md). This is an in-repository fork,
+not a separately published package or remote GitHub fork.
+
+To switch to the managed copy:
+
+```powershell
+npm run install:cli -- --atelier
+```
+
+The installer backs up settings, copies the fork into the standalone PiAstra
+installation, and disables the upstream `npm:pi-atelier` extension while keeping
+its package and your `pi-atelier.json`. Restart Pi or run `/reload`. Subsequent
+`npm run install:cli` runs update the managed fork without needing the flag again.
+Without an initial opt-in, the installer leaves upstream Atelier alone.
+If you installed Atelier from Git or a separate extension path instead of npm,
+disable that registration yourself before enabling the fork to avoid duplicates.
+
+`/atelier`, sidebar panel IDs and configuration remain compatible. PiAstra owns
+the input editor while Atelier supplies its rounded frame; both startup orders
+work. `/atelier disable` removes the frame without disabling PiAstra shortcuts,
+and `/atelier enable` restores it without nesting editors. Unknown custom
+editors are left untouched. See [shortcut cooperation](shortcuts.md).
+
+Sidebar scrolling still needs reproduction and fixing, including determining
+whether it originates in Pi's terminal renderer. Automated editor/lifecycle
+checks do not constitute live terminal or scrolling verification.
+
+The managed fork includes the earlier agent-name customization: the activity
+label below the editor shows the active PiAstra role instead of READY/WORKING,
+with role colors: **orchestrator purple, general yellow, fast light blue, review green**.
+Working animation remains; warning/error colors take precedence. Without
+PiAstra it falls back to Atelier's normal activity label. This was the only
+source modification found when auditing the old npm installation against the
+published 0.10.1 package; your sidebar/layout preferences remain in the existing
+`pi-atelier.json`.
+
+The old `patch-atelier-agent-label.mjs` script is only for the upstream npm copy;
+do not use it to update the fork. Re-run the CLI installer to deploy fork changes.
+
+To return to upstream, remove the managed `pi-atelier/extensions/index.ts` entry
+from `settings.json`, then use `pi config` to re-enable the upstream package's
+extension (or remove its `extensions: []` filter). Restart or `/reload` afterward.
+Your sidebar configuration is preserved.
+
+## PiAstra-maintained pi-todo fork
+
+`npm run install:cli` automatically migrates an enabled `npm:@juicesharp/rpiv-todo` entry (bare, versioned or ranged, string or object form) to the self-contained `extensions/pi-todo` fork: the upstream package entry is kept but its extension disabled, and the managed index is registered once. Only the original `rpiv-todos` widget and its collapse shortcut are suppressed; the `todo` tool, `/todos`, history and Atelier sidebar TODOs keep working. With no todo package configured, or only disabled entries, the installer leaves todo settings alone; once managed, reruns keep the fork updated. User todo config and history are never written, and nothing changes until the installer runs and Pi restarts or reloads. Todo installs from Git or a local path are not migrated — disable those registrations yourself to avoid duplicates.
+
+To return to upstream, remove the managed `pi-todo` extension entry from `settings.json` and re-enable the upstream package's extension via `pi config`, then restart or `/reload`. Removing the upstream package with `pi remove` alone does not remove the managed entry.
+
 ## Performance and limits
 
 On this Windows setup, three offline RPC startup checks before installation took 1.005–1.081 seconds (median 1.067). The final setup took 1.635–1.801 seconds (median 1.658). These measure process startup through `get_state`, without model calls; they are not TUI rendering, RAM, or inference-speed benchmarks. Wide and narrow fullscreen terminal layouts were checked separately using synthetic saved history.
@@ -52,7 +114,7 @@ The Shiki-based `@pi-archimedes/diff` 2.6.3 plugin was trialed and removed: the 
 
 An LSP is optional code intelligence, not a syntax-highlighting requirement. Language servers add initialization/indexing work, RAM use, and potentially more tool-result context. Lazy startup reduces idle overhead but does not remove that cost once used. None is installed by this setup. Add one later for specific languages if diagnostics, references, and symbol navigation justify it; avoid starting one per delegated worker by default.
 
-Settings are backed up before installation. Atelier and TODOs can be removed independently with `pi remove npm:pi-atelier@0.10.1` and `pi remove npm:@juicesharp/rpiv-todo@2.9.0`, then `/reload`. To disable the independent edit renderer, remove only its `extensions/pi-ui/index.ts` entry from Pi settings; keep the installed file because the worker viewer also imports its rendering helper.
+Settings are backed up before installation. To remove managed Atelier completely, remove its `piastra/package/extensions/pi-atelier/extensions/index.ts` entry from Pi settings, then optionally run `pi remove npm:pi-atelier@0.10.1` and `/reload`. Removing only the upstream npm package leaves the managed fork active. To return to upstream instead, follow the rollback note above. The same applies to TODOs: `pi remove` on the upstream package alone does not remove the managed `pi-todo` entry. To disable the independent edit renderer, remove only its `extensions/pi-ui/index.ts` entry from Pi settings; keep the installed file because the worker viewer also imports its rendering helper.
 
 Sources: [Pi Atelier](https://github.com/michaelmjhhhh/pi-atelier), [rpiv-todo](https://github.com/juicesharp/rpiv-mono/tree/main/packages/rpiv-todo), [Pi's diff highlighting issue](https://github.com/earendil-works/pi/issues/4064), [example lazy LSP extension](https://github.com/samfoy/pi-lsp-extension).
-`node scripts/patch-atelier-agent-label.mjs` replaces Atelier's activity text with the current PiAstra role while preserving activity colors and working animation. It backs up the plugin renderer and can be reapplied after an Atelier update. Run `/reload` after applying it.
+For legacy upstream npm installations only, `node scripts/patch-atelier-agent-label.mjs` applies the role label with a renderer backup. The managed fork already includes it; use the CLI installer and `/reload` instead.

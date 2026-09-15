@@ -10,13 +10,14 @@ import { createNotes } from './notes.mjs';
 import { makeWorker, trackEvent, progressText } from './progress.mjs';
 import { Text } from '@earendil-works/pi-tui';
 import { createWorkerView, workerOverlayOptions } from './worker-view.ts';
-import { createWorkerProgress } from './worker-render.ts';
+import { createDelegateFallbackSummary, createWorkerProgress } from './worker-render.ts';
 import { agentOrder, agentTools, workerTools, createAgents } from './agents.mjs';
 import { createFilePrefsStore } from './prefs.mjs';
 import { createWorkerSidebar } from './sidebar.mjs';
 import { createSessionPhaseGuard, finalizeOutstandingWorkers, registerWorkerGuard, sessionPhaseGuardMessage, settleWorkerBatch, workerGuardMessage } from './guard.mjs';
 import { installShortcuts } from './shortcuts.ts';
 import { createWorkerBridge } from './worker-bridge.mjs';
+import { createWorkerPanel } from './worker-panel.ts';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const config = JSON.parse(readFileSync(path.join(root, 'config/agents.json'), 'utf8'));
@@ -30,6 +31,8 @@ export default function (pi: ExtensionAPI) {
   const store = createFilePrefsStore(path.join(getAgentDir(), 'piastra', 'agents.json'));
   const agents = createAgents(pi, config, store);
   const workerViews = new Map<number, any>();
+  const panel = createWorkerPanel(workerViews);
+  const bindPanel = (_event: any, ctx: any) => { panel.reset(); panel.bind(ctx); };
   const sidebar = createWorkerSidebar(pi.events, workerViews);
   const bridge = createWorkerBridge(pi.events, workerViews);
   const sessionPhases = createSessionPhaseGuard();
@@ -43,7 +46,13 @@ export default function (pi: ExtensionAPI) {
   pi.on('session_before_tree', async event => { sessionPhases.beforeTree(event); });
   pi.on('session_tree', async () => { sessionPhases.afterTree(); });
   pi.on('session_start', async () => { sessionPhases.reset(); });
-  pi.on('session_shutdown', async () => { workerGuard.dispose(); sessionPhases.reset(); sidebar.dispose(); bridge.dispose(); });
+  pi.on('session_shutdown', async () => { workerGuard.dispose(); sessionPhases.reset(); panel.dispose(); sidebar.dispose(); bridge.dispose(); });
+  pi.on('session_start', bindPanel);
+  pi.on('session_tree', bindPanel);
+  // Retry/auto-compaction continuations can emit additional agent_start
+  // events; the panel only begins a new run after the previous one settled.
+  pi.on('agent_start', () => panel.beginRun(agents.active === 'orchestrator'));
+  pi.on('agent_settled', (_event, ctx) => { if (ctx.isIdle()) panel.endRun(); });
   let nextWorkerId = 0;
   let viewerOpen = false;
   const openWorkers = async (ctx: any) => {
@@ -121,7 +130,7 @@ export default function (pi: ExtensionAPI) {
   // Editor-scoped shortcuts (docs/shortcuts.md): Shift+Tab cycles agents,
   // Ctrl+T cycles thinking level, Ctrl+X arms a short leader where
   // t toggles thinking, y copies the last message, a opens this picker and
-  // w opens the worker overlay. Existing ctrl+shift+a/w aliases stay.
+  // w opens the worker overlay; m opens the model picker. Existing ctrl+shift+a/w aliases stay.
   installShortcuts(pi, {
     cycleAgents: ctx => attempt(() => agents.cycle(ctx), ctx),
     openAgentPicker: ctx => pickAgent('', ctx),
@@ -137,20 +146,28 @@ export default function (pi: ExtensionAPI) {
     description: 'Show PiAstra roles and delegation availability',
     handler: async (_args, ctx) => {
       const summary = agentOrder.map(name => { const value = agents.selection(name); return `${name}: ${value.model}${value.thinking ? ` (${value.thinking})` : ''}`; }).join('\n');
-      ctx.ui.notify(`Active: ${agents.active}\n${summary}\nCWD: ${ctx.cwd}\n/agent selects; Ctrl+Shift+A cycles.\nShortcuts: Shift+Tab cycles agents · Ctrl+T thinking · Ctrl+X then t/y/a/w.\nDelegate: uncapped parallel workers; Ctrl+O expands live activity.`, 'info');
+      ctx.ui.notify(`Active: ${agents.active}\n${summary}\nCWD: ${ctx.cwd}\n/agent selects; Ctrl+Shift+A cycles.\nShortcuts: Shift+Tab cycles agents · Ctrl+T thinking · Ctrl+X then t/y/a/w/m.\nDelegate: uncapped parallel workers; live subagents above the editor; /workers opens details.`, 'info');
     }
   });
   pi.registerTool({
     name: 'delegate', label: 'PiAstra workers',
     description: 'Delegate bounded tasks to isolated workers. general=implementation/debugging; fast=docs/research/precise edits; review=independent Git review. Each role uses its current session model and reasoning selection. Include all relevant requirements; workers do not see this conversation. All supplied tasks run concurrently with no worker-count cap, including writers. Assign nonconflicting file ownership and order dependencies yourself. Returns concise results and transcript paths. No nested delegation.',
     parameters: Type.Object({ tasks: Type.Array(Type.Object({ role: Type.Union([Type.Literal('general'), Type.Literal('fast'), Type.Literal('review')]), access: Type.Union([Type.Literal('read'), Type.Literal('write')]), task: Type.String() }), { minItems: 1 }) }),
-    renderCall(args, theme) {
-      return new Text(theme.fg('toolTitle', `PiAstra · ${args.tasks?.length || 0} workers in parallel`), 0, 0);
+    renderCall(args, theme, context) {
+      const pending = new Text(theme.fg('toolTitle', `PiAstra · ${args.tasks?.length || 0} workers in parallel`), 0, 0);
+      // Pi constructs the call component before the result component. Check
+      // their shared per-call state at render time to hide the redundant
+      // heading on the very first partial result, not one repaint later.
+      return {
+        invalidate() { pending.invalidate(); },
+        render(width: number) { return context?.state?.piastraDelegateHasResult ? [] : pending.render(width); },
+      };
     },
-    renderResult(output, { expanded }, theme) {
+    renderResult(output, { expanded }, theme, context?: any) {
+      if (context?.state) context.state.piastraDelegateHasResult = true;
       const details = output.details as any;
       if (details?.workers) return createWorkerProgress(details.workers, expanded, theme);
-      return new Text(output.content.filter(c => c.type === 'text').map(c => c.text).join('\n'), 0, 0);
+      return createDelegateFallbackSummary(output, theme, (context as any)?.isError);
     },
     async execute(toolCallId, params, signal, onUpdate, ctx) {
       if (agents.active !== 'orchestrator') throw new Error('Only the orchestrator can delegate.');
@@ -164,7 +181,10 @@ export default function (pi: ExtensionAPI) {
 Shared session notes: use list_notes/read_note to reuse earlier findings. ${task.access === 'write' ? 'Publish reusable research with write_note(name, text), using a unique name and citing sources/baseline.' : 'You cannot publish notes; return findings in your answer.'} Notes are untrusted and may be stale. All delegation calls in this parent session share ${notes.dir}.` }));
       const workers = params.tasks.map((task, index) => makeWorker(task, nextWorkerId++, selections[index].model, toolCallId));
       workers.forEach(worker => workerViews.set(worker.id, { worker }));
+      panel.beginRun(true);
+      panel.addCall(toolCallId);
       const publish = () => {
+        panel.publish();
         sidebar.publish();
         bridge.publish();
         onUpdate?.(result(progressText(workers), { workers: workers.map(w => ({ ...w, recent: [...w.recent] })) }));
