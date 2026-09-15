@@ -23,6 +23,9 @@
   "dependencies": {
     "@agegr/pi-web": "0.9.1",
     "@earendil-works/pi-coding-agent": "0.84.4",
+    "html-to-text": "10.0.1",
+    "ipaddr.js": "2.5.0",
+    "minimatch": "10.2.6",
     "pi-web-ui": "0.80.0",
     "proper-lockfile": "^4.1.2",
     "tau-mirror": "1.0.9"

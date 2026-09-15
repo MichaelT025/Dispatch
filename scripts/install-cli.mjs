@@ -1,8 +1,10 @@
-import { readFile, writeFile, mkdir, copyFile, cp } from 'node:fs/promises';
+import { readFile, writeFile, mkdir, copyFile, cp, rm } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import path from 'node:path';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import { createRequire } from 'node:module';
+import { minimatch } from 'minimatch';
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const agentDir = process.env.PI_CODING_AGENT_DIR || path.join(homedir(), '.pi', 'agent');
 // The managed Atelier fork is strictly opt-in: pass --atelier once to install
@@ -18,16 +20,86 @@ try {
 } catch (error) { if (error.code !== 'ENOENT') throw error; }
 const installed = path.join(agentDir, 'piastra', 'package');
 for (const dir of ['extensions/piastra', 'extensions/pi-ui', 'extensions/pi-worktree', 'config', 'roles']) await mkdir(path.join(installed, dir), { recursive: true });
-for (const file of ['extensions/piastra/index.ts', 'extensions/piastra/policy.mjs', 'extensions/piastra/agents.mjs', 'extensions/piastra/prefs.mjs', 'extensions/piastra/guard.mjs', 'extensions/piastra/progress.mjs', 'extensions/piastra/sidebar.mjs', 'extensions/piastra/worker-bridge.mjs', 'extensions/piastra/worker-view.ts', 'extensions/piastra/worker-panel.ts', 'extensions/piastra/worker-render.ts', 'extensions/piastra/shortcuts.ts', 'extensions/pi-worktree/git-worktree.ts', 'extensions/pi-worktree/LICENSE', 'config/agents.json', ...['orchestrator', 'general', 'fast', 'review'].map(role => `roles/${role}.md`)]) {
+for (const file of ['extensions/piastra/index.ts', 'extensions/piastra/policy.mjs', 'extensions/piastra/agents.mjs', 'extensions/piastra/prefs.mjs', 'extensions/piastra/guard.mjs', 'extensions/piastra/progress.mjs', 'extensions/piastra/sidebar.mjs', 'extensions/piastra/worker-bridge.mjs', 'extensions/piastra/worker-view.ts', 'extensions/piastra/worker-panel.ts', 'extensions/piastra/worker-render.ts', 'extensions/piastra/shortcuts.ts', 'extensions/piastra/custom-tools.ts', 'extensions/piastra/notes.mjs', 'extensions/piastra/web.mjs', 'extensions/piastra/checks.mjs', 'extensions/piastra/windows-check-job.ps1', 'extensions/pi-worktree/git-worktree.ts', 'extensions/pi-worktree/LICENSE', 'config/agents.json', 'config/checks.json', ...['orchestrator', 'general', 'fast', 'review'].map(role => `roles/${role}.md`)]) {
   await copyFile(path.join(root, file), path.join(installed, file));
 }
-// The preference store (prefs.mjs) is the only PiAstra module with a plain npm
-// runtime dependency that Pi's loader does not alias. Bundle it into the
-// standalone copy so the installed extension resolves it without a checkout or
-// a network install.
-await writeFile(path.join(installed, 'package.json'), JSON.stringify({ name: 'piastra-user-extension', private: true, type: 'module', dependencies: { 'proper-lockfile': '^4.1.2' } }) + '\n');
+// The installed copy needs plain npm runtime dependencies that Pi's loader
+// does not alias: the preference store lock (proper-lockfile) plus the agent
+// tool web runtime (html-to-text, ipaddr.js). Hoisted transitive dependencies
+// are not inside the top-level package dirs, so copy the recursive runtime
+// dependency closure (dependencies + resolvable optionalDependencies) with
+// no network install. Each package resolves its own deps from its source
+// location and vendors them nested under its target node_modules, preserving
+// per-package versions exactly as Node would resolve them.
+const standaloneDeps = { 'proper-lockfile': '^4.1.2', 'html-to-text': '10.0.1', 'ipaddr.js': '2.5.0' };
+await writeFile(path.join(installed, 'package.json'), JSON.stringify({ name: 'piastra-user-extension', private: true, type: 'module', dependencies: standaloneDeps }) + '\n');
 await mkdir(path.join(installed, 'node_modules'), { recursive: true });
-await cp(path.join(root, 'node_modules', 'proper-lockfile'), path.join(installed, 'node_modules', 'proper-lockfile'), { recursive: true, force: true });
+// Locate a dependency's package.json from an importer's source dir. Most
+// packages allow `<dep>/package.json`; exports-map packages (e.g.
+// htmlparser2) block that subpath, so fall back to resolving the entry
+// point and walking up to the owning package.json.
+function findDependencyPackageJson(dep, fromDir) {
+  const requireFrom = createRequire(path.join(fromDir, 'package.json'));
+  try {
+    return requireFrom.resolve(`${dep}/package.json`);
+  } catch (error) {
+    if (error?.code !== 'ERR_PACKAGE_PATH_NOT_EXPORTED' && error?.code !== 'ERR_PACKAGE_SUBPATH_NOT_EXPORTED') throw error;
+    const entry = requireFrom.resolve(dep);
+    let dir = path.dirname(entry);
+    while (true) {
+      const candidate = path.join(dir, 'package.json');
+      if (existsSync(candidate)) {
+        try {
+          if (JSON.parse(readFileSync(candidate, 'utf8')).name === dep) return candidate;
+        } catch {}
+      }
+      const parent = path.dirname(dir);
+      if (parent === dir) break;
+      dir = parent;
+    }
+    throw error;
+  }
+}
+async function copyPackageFiles(sourceDir, targetDir) {
+  await cp(sourceDir, targetDir, {
+    recursive: true,
+    force: true,
+    filter: (source) => {
+      const relative = path.relative(sourceDir, source);
+      if (!relative) return true;
+      return !relative.split(path.sep).includes('node_modules');
+    },
+  });
+}
+async function installPackageTree(dep, fromSourceDir, fromTargetDir, chain = []) {
+  const packageJsonPath = findDependencyPackageJson(dep, fromSourceDir);
+  const sourceDir = path.dirname(packageJsonPath);
+  if (chain.includes(sourceDir)) return;
+  const targetDir = path.join(fromTargetDir, 'node_modules', dep);
+  if (existsSync(targetDir)) return;
+  await mkdir(path.dirname(targetDir), { recursive: true });
+  await copyPackageFiles(sourceDir, targetDir);
+  const manifest = JSON.parse(await readFile(packageJsonPath, 'utf8'));
+  const runtimeDeps = { ...(manifest.dependencies || {}) };
+  for (const [name, range] of Object.entries(manifest.optionalDependencies || {})) {
+    if (!(name in runtimeDeps)) runtimeDeps[name] = range;
+  }
+  const nextChain = [...chain, sourceDir];
+  for (const child of Object.keys(runtimeDeps)) {
+    try {
+      await installPackageTree(child, sourceDir, targetDir, nextChain);
+    } catch (error) {
+      if (manifest.optionalDependencies?.[child] && (error?.code === 'MODULE_NOT_FOUND' || error?.code === 'ERR_MODULE_NOT_FOUND')) continue;
+      throw error;
+    }
+  }
+}
+for (const dep of Object.keys(standaloneDeps)) {
+  // Refresh the managed closure on reinstall, including installations made
+  // by older shallow-copy versions of this script.
+  await rm(path.join(installed, 'node_modules', dep), { recursive: true, force: true });
+  await installPackageTree(dep, root, installed);
+}
 await copyFile(path.join(root, 'extensions/pi-ui/index.ts'), path.join(installed, 'extensions/pi-ui/index.ts'));
 // Vendor the pi-queue fork runtime files (extension index + dependencies +
 // LICENSE/README), excluding tests. The fork is required: bail out before
@@ -89,12 +161,56 @@ const todoSourceIndex = path.join(todoSource, 'index.ts');
 const todoSourceVendorIndex = path.join(todoSource, 'vendor', 'rpiv-config', 'index.ts');
 const upstreamTodo = /^npm:@juicesharp\/rpiv-todo(?:@.*)?$/i;
 const todoEntrySource = (entry) => (typeof entry === 'string' ? entry : entry?.source);
+// The upstream npm package lives at agentDir/npm/node_modules/@juicesharp/
+// rpiv-todo (Pi's user-scope npm root) and its manifest declares exactly one
+// extension file, index.ts. Whether a settings entry actually enables that
+// file follows Pi's own pattern semantics (dist/core/package-manager.js
+// applyPatterns), mirrored here with minimatch instead of importing Pi
+// internals: a pattern is matched against the file's root-relative posix
+// path, its basename, and its absolute posix path (root-relative and basename
+// coincide for the sole file). Plain glob patterns include; with no plain
+// pattern every file starts enabled. `!glob` excludes. `+path` and `-path`
+// are exact overrides: `+` restores a file excluded earlier, `-` finally
+// removes it even after a `+`. Applied in that fixed order.
+const todoUpstreamRoot = path.join(agentDir, 'npm', 'node_modules', '@juicesharp', 'rpiv-todo');
+const todoUpstreamFileRelative = 'index.ts';
+const todoUpstreamFileAbsolute = path.join(todoUpstreamRoot, todoUpstreamFileRelative).split(path.sep).join('/');
+const todoPatternGlob = (pattern) => {
+  const normalized = pattern.split(path.sep).join('/');
+  return minimatch(todoUpstreamFileRelative, normalized)
+    || minimatch(path.basename(todoUpstreamFileRelative), normalized)
+    || minimatch(todoUpstreamFileAbsolute, normalized);
+};
+const todoPatternExact = (pattern) => {
+  const normalized = (pattern.startsWith('./') || pattern.startsWith('.\\') ? pattern.slice(2) : pattern).split(path.sep).join('/');
+  return normalized === todoUpstreamFileRelative || normalized === todoUpstreamFileAbsolute;
+};
+const todoPatternsEnabled = (patterns) => {
+  const includes = [];
+  const excludes = [];
+  const forceIncludes = [];
+  const forceExcludes = [];
+  for (const pattern of patterns) {
+    if (pattern.startsWith('+')) forceIncludes.push(pattern.slice(1));
+    else if (pattern.startsWith('-')) forceExcludes.push(pattern.slice(1));
+    else if (pattern.startsWith('!')) excludes.push(pattern.slice(1));
+    else includes.push(pattern);
+  }
+  let enabled = includes.length === 0 ? true : includes.some(todoPatternGlob);
+  if (enabled && excludes.length > 0) enabled = !excludes.some(todoPatternGlob);
+  if (!enabled && forceIncludes.length > 0) enabled = forceIncludes.some(todoPatternExact);
+  if (enabled && forceExcludes.length > 0) enabled = !forceExcludes.some(todoPatternExact);
+  return enabled;
+};
 const todoEntryEnabled = (entry) => {
   if (typeof entry === 'string') return true;
   if (!entry || typeof entry !== 'object') return false;
-  if (Array.isArray(entry.extensions) && entry.extensions.length === 0) return false;
   if (entry.autoload === false) return false;
-  return true;
+  const patterns = entry.extensions;
+  if (patterns === undefined) return true;
+  if (!Array.isArray(patterns) || !patterns.every(pattern => typeof pattern === 'string')) return false;
+  if (patterns.length === 0) return false; // [] explicitly disables all resources
+  return todoPatternsEnabled(patterns);
 };
 const todoAlreadyManaged = (settings.extensions || []).includes(todoManagedIndex);
 const todoActive = (settings.packages || []).some(

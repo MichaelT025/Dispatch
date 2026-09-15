@@ -23,7 +23,9 @@ export function toolSummary(name: unknown, args: any = {}) {
   const tool = String(name || 'tool');
   args = args || {};
   const label = ({ read: 'Read', grep: 'Search', find: 'Find', ls: 'List', bash: 'Run',
-    edit: 'Edit', write: 'Write', inspect_git: 'Git', fetch_url: 'Fetch' } as any)[tool] || safe(tool).replace(/\s+/g, ' ');
+    edit: 'Edit', write: 'Write', inspect_git: 'Git', fetch_url: 'Fetch',
+    web_search: 'Search', run_checks: 'Check', write_note: 'Note', read_note: 'Note',
+    list_notes: 'Notes' } as any)[tool] || safe(tool).replace(/\s+/g, ' ');
   const clean = (value: unknown) => safe(value).replace(/\s+/g, ' ').trim();
   let value = '';
   if (tool === 'grep' || tool === 'find') {
@@ -32,7 +34,7 @@ export function toolSummary(name: unknown, args: any = {}) {
     value = [pattern, scope && `in ${scope}`].filter(Boolean).join(' ');
   } else {
     value = clean(args.path || args.file_path || args.pattern || args.command || args.url ||
-      [args.operation, args.revision].filter(Boolean).join(' '));
+      args.query || args.name || [args.operation, args.revision].filter(Boolean).join(' '));
   }
   return `${label}${value ? ` ${value.slice(0, 220)}` : ''}`;
 }

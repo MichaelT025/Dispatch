@@ -33,6 +33,11 @@
  *   owning Atelier session, so PiAstra may later rebuild the factory
  *   (per-presentation ownership identity, not just initial factory equality)
  *   while the Atelier session can still peel its frame back off.
+ *   If the Piastra factory was already retired (session replaced/shutdown),
+ *   compose/remove still update the retired factory's presentation METADATA
+ *   for handoff at the next Piastra session_start, but never construct an
+ *   editor or trigger ui.setEditorComponent — a retired factory refuses to
+ *   build editors (throws) so no stale reconstruction can happen.
  * - Unknown foreign factories (no capability metadata) are never overwritten
  *   by either installer.
  *
@@ -353,8 +358,17 @@ export function installShortcuts(pi: ExtensionAPI, actions: PiastraShortcutActio
      */
     const buildFactory = (incoming: readonly EditorPresentationEntry[]): EditorFactory => {
       const presentationEntries = [...incoming];
-      const compose = (next: readonly EditorPresentationEntry[]): EditorFactory | undefined =>
-        generation === currentGeneration ? buildFactory(next) : undefined;
+      // Active generation: rebuild a fresh factory carrying `next`. Retired
+      // generation: NEVER construct an editor or run an action, but still
+      // record the updated presentation metadata on the (still UI-installed)
+      // retired factory so the next session_start hands off exactly these
+      // entries. Returning undefined means the caller must not call
+      // ui.setEditorComponent, so no stale reconstruction ever happens.
+      const compose = (next: readonly EditorPresentationEntry[]): EditorFactory | undefined => {
+        if (generation === currentGeneration) return buildFactory(next);
+        presentationEntries.splice(0, presentationEntries.length, ...next);
+        return undefined;
+      };
       const factory = ((tui: any, theme: any, keybindings: any) => {
         if (generation !== currentGeneration) throw new Error('PiAstra editor factory belongs to a retired session');
         disarmActive();
@@ -386,7 +400,9 @@ export function installShortcuts(pi: ExtensionAPI, actions: PiastraShortcutActio
         return editor;
       }) as EditorFactory;
       Object.defineProperty(factory, EDITOR_FACTORY_BRAND, { value: true });
-      Object.defineProperty(factory, EDITOR_PRESENTATIONS_KEY, { value: [...presentationEntries] });
+      // Legacy snapshot property stays consistent with the live metadata:
+      // read through the mutable entries array (retired compose updates it).
+      Object.defineProperty(factory, EDITOR_PRESENTATIONS_KEY, { get: () => [...presentationEntries] });
       Object.defineProperty(factory, EDITOR_CAPABILITY_KEY, {
         value: {
           id: PIASTRA_EDITOR_CAPABILITY_ID,
@@ -405,7 +421,6 @@ export function installShortcuts(pi: ExtensionAPI, actions: PiastraShortcutActio
       });
       return factory;
     };
-
     const previous = ctx.ui.getEditorComponent() as any;
     let presentations: readonly EditorPresentationEntry[] = [];
     if (previous) {

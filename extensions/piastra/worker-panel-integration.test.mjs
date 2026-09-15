@@ -110,7 +110,9 @@ function makeCtx({ branch = [] } = {}) {
       notify: () => {},
       setStatus: () => {},
     },
-    sessionManager: { getBranch: () => branch },
+    sessionManager: { getBranch: () => branch, getSessionId: () => 'panel-integration-fixture' },
+    // Mirrors the main delegate-execute fixture in guard.test.mjs (trusted parent session).
+    isProjectTrusted: () => true,
     modelRegistry: { find: () => ({ provider: 'fixture', id: 'model' }) },
   };
   const renderWidget = (width = 80) => {

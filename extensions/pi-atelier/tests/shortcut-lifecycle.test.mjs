@@ -311,85 +311,96 @@ test("real Atelier startup via Pi loader installs composed editor; disable/enabl
 	}
 });
 
-for (const order of ["piastra-first", "atelier-first"]) {
-	test(`session_shutdown in ${order} order then restart has no stale editor reconstruction`, async () => {
-		const env = await setup();
-		try {
-			const ext = atelierExtFrom(env.result);
-			const harness = makeHarness();
-			const piastraPi = fakePiastraPi();
-			const { calls, actions } = countingActions();
-			installShortcuts(piastraPi, actions);
+for (const shutdownOrder of ["piastra-first", "atelier-first"]) {
+	for (const restartOrder of ["piastra-first", "atelier-first"]) {
+		test(`shutdown ${shutdownOrder}, restart startup ${restartOrder}: one frame, no stale reconstruction, disable/enable after restart`, async () => {
+			const env = await setup();
+			try {
+				const ext = atelierExtFrom(env.result);
+				const harness = makeHarness();
+				const piastraPi = fakePiastraPi();
+				const { calls, actions } = countingActions();
+				installShortcuts(piastraPi, actions);
 
-			const firstManager = makeSessionManager();
-			const firstCtx = makeCtx(harness, env.cwd, firstManager);
-			await emitAll(piastraPi.handlers, "session_start", { reason: "startup" }, firstCtx);
-			await emitAll(ext.handlers, "session_start", { reason: "startup" }, firstCtx);
-			assert.ok(harness.editor instanceof PiastraEditor);
-			assert.equal(harness.editor.getPresentations().length, 1);
-			const staleEditor = harness.editor;
-			const staleFactory = harness.ui.getEditorComponent();
+				const firstManager = makeSessionManager();
+				const firstCtx = makeCtx(harness, env.cwd, firstManager);
+				await emitAll(piastraPi.handlers, "session_start", { reason: "startup" }, firstCtx);
+				await emitAll(ext.handlers, "session_start", { reason: "startup" }, firstCtx);
+				assert.ok(harness.editor instanceof PiastraEditor);
+				assert.equal(harness.editor.getPresentations().length, 1);
+				const staleEditor = harness.editor;
+				const staleFactory = harness.ui.getEditorComponent();
 
-			// Shutdown in the order under test, using the same session ctx so
-			// Atelier's session-identity guard matches the active session.
-			if (order === "piastra-first") {
-				await emitAll(piastraPi.handlers, "session_shutdown", { reason: "shutdown" }, firstCtx);
-				await emitAll(ext.handlers, "session_shutdown", { reason: "shutdown" }, firstCtx);
-			} else {
-				await emitAll(ext.handlers, "session_shutdown", { reason: "shutdown" }, firstCtx);
-				await emitAll(piastraPi.handlers, "session_shutdown", { reason: "shutdown" }, firstCtx);
+				// Shutdown in the order under test, using the same session ctx so
+				// Atelier's session-identity guard matches the active session.
+				const shutdownFirst = shutdownOrder === "piastra-first" ? piastraPi.handlers : ext.handlers;
+				const shutdownSecond = shutdownOrder === "piastra-first" ? ext.handlers : piastraPi.handlers;
+				await emitAll(shutdownFirst, "session_shutdown", { reason: "shutdown" }, firstCtx);
+				await emitAll(shutdownSecond, "session_shutdown", { reason: "shutdown" }, firstCtx);
+
+				// Restart on the SAME UI: brand-new session (new ctx + sessionManager),
+				// with session_start emitted in the restart order under test. In the
+				// atelier-first order the retired Piastra factory receives the new
+				// Atelier token via capability metadata (never constructing an
+				// editor), and the next Piastra session consumes only current entries.
+				const secondManager = makeSessionManager();
+				const secondCtx = makeCtx(harness, env.cwd, secondManager);
+				const restartFirst = restartOrder === "piastra-first" ? piastraPi.handlers : ext.handlers;
+				const restartSecond = restartOrder === "piastra-first" ? ext.handlers : piastraPi.handlers;
+				await emitAll(restartFirst, "session_start", { reason: "startup" }, secondCtx);
+				await emitAll(restartSecond, "session_start", { reason: "startup" }, secondCtx);
+				assert.deepEqual(
+					harness.notified.filter(([, kind]) => kind === "error"),
+					[],
+					`restart must not error: ${JSON.stringify(harness.notified)}`,
+				);
+
+				// Fresh composed editor: not the stale instance, exactly one frame,
+				// and the retired factory refuses reconstruction.
+				assert.ok(harness.editor instanceof PiastraEditor, "restart rebuilds the shortcut editor");
+				assert.notEqual(harness.editor, staleEditor, "restart does not reuse the stale editor");
+				assert.equal(harness.editor.getPresentations().length, 1, "restart composes exactly one frame");
+				assert.equal(frameCount(harness.editor, 80), 1, "no nested frames after restart");
+				assert.throws(
+					() => staleFactory(harness.tui, harness.theme, harness.keybindings),
+					/retired session/,
+					"stale factory must refuse reconstruction",
+				);
+
+				// Shortcuts work on the restarted session.
+				harness.editor.handleInput(SHIFT_TAB);
+				await settle();
+				assert.equal(calls.cycleAgents, 1, "Shift+Tab works after restart");
+				harness.editor.handleInput(CTRL_T);
+				assert.equal(harness.native.thinkCycle, 1, "native fallback works after restart");
+
+				// /atelier disable removes the CURRENT session's frame (0 entries)
+				// while keeping the shortcut editor; re-enable restores exactly one.
+				const command = ext.commands.get("atelier");
+				assert.ok(command, "atelier command present");
+				await command.handler("disable", secondCtx);
+				assert.ok(harness.editor instanceof PiastraEditor, "disable keeps the PiAstra editor");
+				assert.equal(harness.editor.getPresentations().length, 0, "disable removes the current frame");
+				assert.equal(frameCount(harness.editor, 80), 0, "no frame after disable");
+				harness.editor.handleInput(SHIFT_TAB);
+				await settle();
+				assert.equal(calls.cycleAgents, 2, "shortcuts survive post-restart disable");
+				await command.handler("enable", secondCtx);
+				assert.ok(harness.editor instanceof PiastraEditor, "enable restores the composed editor");
+				assert.equal(harness.editor.getPresentations().length, 1, "re-enable restores exactly one frame");
+				assert.equal(frameCount(harness.editor, 80), 1, "re-enable does not nest frames");
+
+				// Second shutdown cycle (same order) stays clean: no errors, no throws.
+				await emitAll(shutdownFirst, "session_shutdown", { reason: "shutdown" }, secondCtx);
+				await emitAll(shutdownSecond, "session_shutdown", { reason: "shutdown" }, secondCtx);
+				assert.deepEqual(
+					harness.notified.filter(([, kind]) => kind === "error"),
+					[],
+					`second shutdown must not error: ${JSON.stringify(harness.notified)}`,
+				);
+			} finally {
+				await env.teardown();
 			}
-
-			// Restart: brand-new session (new ctx + sessionManager, same TUI ui).
-			const secondManager = makeSessionManager();
-			const secondCtx = makeCtx(harness, env.cwd, secondManager);
-			await emitAll(piastraPi.handlers, "session_start", { reason: "startup" }, secondCtx);
-			await emitAll(ext.handlers, "session_start", { reason: "startup" }, secondCtx);
-			assert.deepEqual(
-				harness.notified.filter(([, kind]) => kind === "error"),
-				[],
-				`restart must not error: ${JSON.stringify(harness.notified)}`,
-			);
-
-			// Fresh composed editor: not the stale instance, exactly one frame,
-			// and the retired factory refuses reconstruction.
-			assert.ok(harness.editor instanceof PiastraEditor, "restart rebuilds the shortcut editor");
-			assert.notEqual(harness.editor, staleEditor, "restart does not reuse the stale editor");
-			assert.equal(harness.editor.getPresentations().length, 1, "restart composes exactly one frame");
-			assert.equal(frameCount(harness.editor, 80), 1, "no nested frames after restart");
-			assert.throws(
-				() => staleFactory(harness.tui, harness.theme, harness.keybindings),
-				/retired session/,
-				"stale factory must refuse reconstruction",
-			);
-
-			// Shortcuts work on the restarted session.
-			harness.editor.handleInput(SHIFT_TAB);
-			await settle();
-			assert.equal(calls.cycleAgents, 1, "Shift+Tab works after restart");
-			harness.editor.handleInput(CTRL_T);
-			assert.equal(harness.native.thinkCycle, 1, "native fallback works after restart");
-
-			// Second shutdown cycle (same order) stays clean: no errors, no throws.
-			await emitAll(
-				order === "piastra-first" ? piastraPi.handlers : ext.handlers,
-				"session_shutdown",
-				{ reason: "shutdown" },
-				secondCtx,
-			);
-			await emitAll(
-				order === "piastra-first" ? ext.handlers : piastraPi.handlers,
-				"session_shutdown",
-				{ reason: "shutdown" },
-				secondCtx,
-			);
-			assert.deepEqual(
-				harness.notified.filter(([, kind]) => kind === "error"),
-				[],
-				`second shutdown must not error: ${JSON.stringify(harness.notified)}`,
-			);
-		} finally {
-			await env.teardown();
-		}
-	});
+		});
+	}
 }
