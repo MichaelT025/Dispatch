@@ -11,7 +11,7 @@ if (!existsSync(join(root, '.local', 'agent', 'settings.json'))) {
   throw new Error('Run npm run setup before starting Dispatch.');
 }
 if (!statSync(workspace).isDirectory()) throw new Error('Workspace must be a directory.');
-const port = parseMainPort(process.env);;
+const port = parseMainPort(process.env);
 
 const child = spawn(process.execPath, [
   join(root, 'node_modules', 'pi-web-ui', 'bin', 'pi-web-ui.mjs'),
