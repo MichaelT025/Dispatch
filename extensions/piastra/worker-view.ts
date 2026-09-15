@@ -89,7 +89,9 @@ export function createWorkerView(tui: any, theme: any, done: () => void, records
       const all = [...records.values()];
       const record = selected === undefined ? undefined : records.get(selected);
       const worker = record?.worker;
-      const fit = (text: string) => truncateToWidth(text, width);
+      // Labels occupy one physical terminal row, even when a path or worker
+      // field contains valid filesystem whitespace such as a newline or tab.
+      const fit = (text: string) => truncateToWidth(text.replace(/[\r\n\t]/g, ' '), width);
       if (!worker) {
         const hints = '↑/↓ select · ↑ at first: last · Enter/→ open · Esc parent';
         const top = [fit(theme.fg('accent', 'Parent › Workers')), fit(theme.fg('dim', hints))];

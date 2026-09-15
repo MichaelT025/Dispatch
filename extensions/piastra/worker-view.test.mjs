@@ -303,6 +303,30 @@ test('transcript file path stays visible in output pane', () => {
   } finally { view.dispose(); }
 });
 
+test('single-line worker labels cannot inject physical rows or terminal tabs', () => {
+  const records = new Map([[1, {
+    worker: baseWorker(1, 'A multiline\ntask\twith tabs', {
+      transcript: '/tmp/directory\nwith\ttabs/worker.jsonl',
+      role: 'general\nagent', model: 'provider/\tmodel',
+    }),
+    getMessages: () => [{ role: 'assistant', content: 'Output stays within its pane' }],
+  }]]);
+  const view = createWorkerView(mkTui(24), theme, () => {}, records);
+  try {
+    // Picker task/identity labels are single-line too.
+    for (const line of view.render(80)) assert.doesNotMatch(line, /[\r\n\t]/);
+    view.handleInput('\r');
+    const lines = view.render(80);
+    assert.equal(lines.length, 24);
+    for (const line of lines) {
+      assert.doesNotMatch(line, /[\r\n\t]/);
+      assert.ok(visibleWidth(line) <= 80);
+    }
+    assert.match(lines.join('\n'), /Transcript: \/tmp\/directory with tabs\/worker\.jsonl/);
+    assert.match(lines.at(-1), /#1 general agent · provider\/ model · running/);
+  } finally { view.dispose(); }
+});
+
 test('tiny and narrow terminals keep bounds, prompt and identity', () => {
   const task = Array.from({ length: 10 }, (_, i) => `Tiny prompt line ${i}`).join(' ');
   const records = new Map([[1, { worker: baseWorker(1, task), getMessages: () => [{ role: 'assistant', content: 'out' }] }]]);

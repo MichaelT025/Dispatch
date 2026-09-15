@@ -73,12 +73,20 @@ bracketed multiline pastes behave exactly as before, while a clipboard image
 pastes as a compact `[Image #1]` placeholder. Each sequential clipboard paste
 adds the next placeholder (`[Image #2]`, …) — numbering covers multiple
 sequential clipboard pastes, not a simultaneous collection of clipboard
-images. The original temp image path stays registered and expands back for
-submission, so the model still receives the image.
+images. The original temporary image path stays registered and expands back
+into the submitted text, matching Pi's native clipboard behavior. This does
+not create an image attachment; the model receives the path and can use its
+file-reading tools to inspect the image.
 
 Caveat: Windows Terminal may intercept `Ctrl+V` for its own paste. Allow the
 key through to pi or keep using `Alt+V`. No global `keybindings.json` writes
 are involved — both bindings live inside the editor's own `handleInput`.
+
+The placeholder adapter uses Pi's native paste registry (tested with Pi
+0.84.4); if that registry API is unavailable, pastes fall back to raw paths.
+An image marker cut off by the viewport on a very narrow terminal may show
+part of its internal paste label until it is fully visible. Reload and draft
+restoration preserve image paths, but may display the raw paths again.
 
 ## How native actions are invoked
 
@@ -166,5 +174,5 @@ Keys while a worker is open:
 ## Tests
 
 ```bash
-node --experimental-strip-types --test extensions/piastra/shortcuts.test.mjs
+node --experimental-strip-types --test extensions/piastra/shortcuts.test.mjs extensions/piastra/image-paste.test.mjs extensions/piastra/image-editor.test.mjs extensions/piastra/worker-view.test.mjs
 ```
