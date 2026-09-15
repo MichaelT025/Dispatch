@@ -77,6 +77,7 @@ const supportFiles = [
   'extensions/piastra/worker-panel.ts',
   'extensions/piastra/worker-render.ts',
   'extensions/piastra/shortcuts.ts',
+  'extensions/piastra/image-paste.ts',
   'extensions/piastra/web.mjs',
   'extensions/piastra/checks.mjs',
   'extensions/piastra/windows-check-job.ps1',
@@ -401,6 +402,8 @@ test('installed fork is self-contained: runtime files copied, tests excluded, si
     // The piastra shortcuts module ships with the managed copy.
     const shortcuts = await readFile(path.join(agentDir, 'piastra/package/extensions/piastra/shortcuts.ts'), 'utf8');
     assert.match(shortcuts, /piastra:compact-transcript:toggle/);
+    const imagePaste = await readFile(path.join(agentDir, 'piastra/package/extensions/piastra/image-paste.ts'), 'utf8');
+    assert.match(imagePaste, /insertClipboardImage/);
     const workerBridge = await readFile(path.join(agentDir, 'piastra/package/extensions/piastra/worker-bridge.mjs'), 'utf8');
     assert.match(workerBridge, /WORKER_CHANNEL/);
 
@@ -545,6 +548,8 @@ test('installer preserves packages and disables only upstream worktree extension
     // The piastra shortcuts module ships with the managed copy.
     const shortcuts = await readFile(path.join(agentDir, 'piastra/package/extensions/piastra/shortcuts.ts'), 'utf8');
     assert.match(shortcuts, /piastra:compact-transcript:toggle/);
+    const imagePaste = await readFile(path.join(agentDir, 'piastra/package/extensions/piastra/image-paste.ts'), 'utf8');
+    assert.match(imagePaste, /insertClipboardImage/);
     // The worker guard helper is part of the managed copy; index.ts imports it
     // at runtime, so a missing file would break the installed extension.
     const guard = await readFile(path.join(agentDir, 'piastra/package/extensions/piastra/guard.mjs'), 'utf8');
