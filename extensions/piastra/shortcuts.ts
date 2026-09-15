@@ -20,6 +20,7 @@
  * - Shift+Tab        cycle the primary PiAstra agents
  * - Ctrl+T           native app.thinking.cycle
  * - Ctrl+O           optional toggleTools action; unhandled → native app.tools.expand
+ * - Ctrl+V / Alt+V   native clipboard paste, with compact image labels
  * - Ctrl+X           arm a 2s leader with a small visible hint
  *   t                native app.thinking.toggle
  *   y                native app.message.copy
@@ -31,6 +32,7 @@
  */
 import { CustomEditor, type ExtensionAPI } from '@earendil-works/pi-coding-agent';
 import { matchesKey, truncateToWidth, visibleWidth } from '@earendil-works/pi-tui';
+import { expandImageMarkers, insertClipboardImage, renderImagePlaceholders } from './image-paste.ts';
 
 export const LEADER_TIMEOUT_MS = 2000;
 export const LEADER_HINT = ' x→ t y a w ';
@@ -59,6 +61,8 @@ export interface PiastraEditorOptions {
   hintStyle?: (hint: string) => string;
   onActionError?: (error: unknown) => void;
   embedWorkingStatus?: boolean;
+  /** Expanded draft captured before core replaces the old editor instance. */
+  initialExpandedText?: string;
 }
 
 const noopActions: PiastraShortcutActions = { cycleAgents() {}, openAgentPicker() {}, openWorkers() {} } as any;
@@ -73,9 +77,12 @@ export class PiastraEditor extends CustomEditor {
   private onActionError: (error: unknown) => void;
   private armed = false;
   private leaderTimer: ReturnType<typeof setTimeout> | undefined;
+  private initialExpandedText: string | undefined;
+  private bracketedPaste: string | undefined;
 
   constructor(tui: any, theme: any, keybindings: any, options: PiastraEditorOptions = {}) {
     super(tui, theme, keybindings, { embedWorkingStatus: options.embedWorkingStatus === true });
+    this.initialExpandedText = options.initialExpandedText;
     this.ctx = options.ctx ?? noopContext;
     this.actions = options.actions ?? noopActions;
     this.leaderTimeoutMs = options.leaderTimeoutMs ?? LEADER_TIMEOUT_MS;
@@ -100,6 +107,31 @@ export class PiastraEditor extends CustomEditor {
   }
 
   handleInput(data: string): void {
+    // A terminal-owned paste may deliver the clipboard path as bracketed text
+    // instead of a keypress. Buffer it before shortcut dispatch (including
+    // split input chunks), and leave all non-image pastes to Pi unchanged.
+    const pasteStart = '\x1b[200~', pasteEnd = '\x1b[201~';
+    if (this.bracketedPaste !== undefined || data.startsWith(pasteStart)) {
+      this.bracketedPaste = (this.bracketedPaste ?? '') + (data.startsWith(pasteStart) ? data.slice(pasteStart.length) : data);
+      const end = this.bracketedPaste.indexOf(pasteEnd);
+      if (end < 0) return;
+      const text = this.bracketedPaste.slice(0, end);
+      const remaining = this.bracketedPaste.slice(end + pasteEnd.length);
+      this.bracketedPaste = undefined;
+      this.disarmLeader();
+      if (!insertClipboardImage(this, text, value => super.insertTextAtCursor(value))) {
+        super.handleInput(pasteStart + text + pasteEnd);
+      }
+      if (remaining) this.handleInput(remaining);
+      return;
+    }
+    // Clipboard paste is a dedicated native callback, not an actionHandlers
+    // entry. Reusing it preserves Pi's OS support and ordinary text fallback.
+    if ((matchesKey(data, 'ctrl+v') || matchesKey(data, 'alt+v')) && this.onPasteImage) {
+      this.disarmLeader();
+      this.onPasteImage();
+      return;
+    }
     if (this.armed) {
       // Escape cancels the leader without aborting: do not pass it to super,
       // where it would match app.interrupt.
@@ -121,8 +153,30 @@ export class PiastraEditor extends CustomEditor {
     super.handleInput(data);
   }
 
+  insertTextAtCursor(text: string): void {
+    if (!insertClipboardImage(this, text, value => super.insertTextAtCursor(value))) {
+      super.insertTextAtCursor(text);
+    }
+  }
+
+  getText(): string {
+    // Core transfers getText(), not getExpandedText(), when resetting custom
+    // UI before /reload. Never export image markers without their registry.
+    // Native layout/cursor/submit use state.lines directly, so the editor can
+    // keep atomic markers internally while its text API returns image paths.
+    return expandImageMarkers(this, super.getText());
+  }
+
+  setText(text: string): void {
+    // Preserve all expanded pastes during direct editor replacement as well.
+    const expanded = this.initialExpandedText ?? expandImageMarkers(this, text);
+    this.initialExpandedText = undefined;
+    this.bracketedPaste = undefined;
+    super.setText(expanded);
+  }
+
   render(width: number): string[] {
-    const lines = super.render(width);
+    const lines = renderImagePlaceholders(this, super.render(width));
     if (!this.armed || lines.length === 0) return lines;
     const hint = this.hintStyle(LEADER_HINT);
     const hintWidth = visibleWidth(hint);
@@ -146,6 +200,7 @@ export class PiastraEditor extends CustomEditor {
 
   /** Lifecycle hook for session shutdown and disposal. */
   dispose(): void {
+    this.bracketedPaste = undefined;
     this.disarmLeader();
   }
 
@@ -242,6 +297,7 @@ export function installShortcuts(pi: ExtensionAPI, actions: PiastraShortcutActio
     const factory = (tui: any, theme: any, keybindings: any) => {
       const editor = new PiastraEditor(tui, theme, keybindings, {
         ctx,
+        initialExpandedText: ctx.ui.getEditorText?.(),
         actions: {
           cycleAgents: guarded(actions.cycleAgents),
           openAgentPicker: guarded(actions.openAgentPicker),
