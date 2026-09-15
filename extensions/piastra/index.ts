@@ -17,6 +17,8 @@ import { createWorkerSidebar } from './sidebar.mjs';
 import { createSessionPhaseGuard, finalizeOutstandingWorkers, registerWorkerGuard, sessionPhaseGuardMessage, settleWorkerBatch, workerGuardMessage } from './guard.mjs';
 import { installShortcuts } from './shortcuts.ts';
 import { createWorkerBridge } from './worker-bridge.mjs';
+import { createAutoTitler } from './session-title.mjs';
+import { removeEmptySession } from '../pi-worktree/empty-sessions.mjs';
 import { createWorkerPanel } from './worker-panel.ts';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
@@ -46,13 +48,35 @@ export default function (pi: ExtensionAPI) {
   pi.on('session_before_tree', async event => { sessionPhases.beforeTree(event); });
   pi.on('session_tree', async () => { sessionPhases.afterTree(); });
   pi.on('session_start', async () => { sessionPhases.reset(); });
-  pi.on('session_shutdown', async () => { workerGuard.dispose(); sessionPhases.reset(); panel.dispose(); sidebar.dispose(); bridge.dispose(); });
+  pi.on('session_shutdown', async (_event, ctx) => {
+    workerGuard.dispose(); sessionPhases.reset(); panel.dispose(); sidebar.dispose(); bridge.dispose();
+    // A session left without a single message (a /worktree fresh session the
+    // user walked away from) must not linger as "(no messages)" in every list.
+    void removeEmptySession(ctx?.sessionManager?.getSessionFile?.());
+  });
   pi.on('session_start', bindPanel);
   pi.on('session_tree', bindPanel);
   // Retry/auto-compaction continuations can emit additional agent_start
   // events; the panel only begins a new run after the previous one settled.
   pi.on('agent_start', () => panel.beginRun(agents.active === 'orchestrator'));
   pi.on('agent_settled', (_event, ctx) => { if (ctx.isIdle()) panel.endRun(); });
+  // Title unnamed sessions after their first reply with the fast role's model
+  // (config/agents.json "autoTitle": false turns it off). Worker transcripts
+  // under piastra/runs are never titled.
+  createAutoTitler(pi, {
+    enabled: config.autoTitle !== false,
+    isWorkerSession: (ctx: any) => /[\\/]piastra[\\/]runs[\\/]/.test(ctx?.sessionManager?.getSessionFile?.() || ''),
+    resolveModel: async (ctx: any) => {
+      const selection = agents.selection('fast')?.model;
+      if (typeof selection === 'string' && selection.includes('/')) {
+        const slash = selection.indexOf('/');
+        const model = ctx.modelRegistry?.find?.(selection.slice(0, slash), selection.slice(slash + 1));
+        if (model) return model;
+      }
+      return ctx.model;
+    },
+    complete: (model: any, context: any, ctx: any) => ctx.modelRegistry.complete(model, context, { maxTokens: 32, temperature: 0.2 })
+  });
   let nextWorkerId = 0;
   let viewerOpen = false;
   const openWorkers = async (ctx: any) => {

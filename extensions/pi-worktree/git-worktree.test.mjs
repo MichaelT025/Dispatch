@@ -62,7 +62,7 @@ test('/wt shares the worktree handler and argument completions', async () => {
   assert.equal(alias.handler, worktree.handler);
   assert.equal(alias.getArgumentCompletions, worktree.getArgumentCompletions);
   assert.deepEqual(alias.getArgumentCompletions(''),
-    ['ls', 'add', 'open', 'rm', 'pr', 'help'].map((value) => ({ value, label: value })));
+    ['ls', 'add', 'open', 'rm', 'pr', 'resume', 'help'].map((value) => ({ value, label: value })));
   assert.deepEqual(alias.getArgumentCompletions('a'), [{ value: 'add', label: 'add' }]);
   assert.equal(alias.getArgumentCompletions('add feat/example'), null);
 
