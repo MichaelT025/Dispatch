@@ -1,0 +1,6 @@
+{
+  "checks": [
+    { "name": "test", "description": "Full unit test suite.", "command": ["npm", "test"] },
+    { "name": "test-cli", "description": "CLI-focused test subset.", "command": ["npm", "run", "test:cli"] }
+  ]
+}

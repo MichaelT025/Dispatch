@@ -20,10 +20,10 @@ test('fork disabled-seed list covers delegation, terminal and soft-edit tools', 
 
 test('role tools are exact allowlists; unknown tools never leak into any role', () => {
   const expected = {
-    orchestrator: ['read', 'grep', 'find', 'ls', 'inspect_git', 'fetch_url', 'bash', 'edit', 'write', 'delegate'],
-    general: ['read', 'grep', 'find', 'ls', 'inspect_git', 'fetch_url', 'bash', 'edit', 'write'],
-    fast: ['read', 'grep', 'find', 'ls', 'inspect_git', 'fetch_url', 'bash', 'edit', 'write'],
-    review: ['read', 'grep', 'find', 'ls', 'inspect_git', 'fetch_url'],
+    orchestrator: ['read', 'grep', 'find', 'ls', 'inspect_git', 'fetch_url', 'web_search', 'run_checks', 'read_note', 'list_notes', 'bash', 'edit', 'write', 'write_note', 'delegate'],
+    general: ['read', 'grep', 'find', 'ls', 'inspect_git', 'fetch_url', 'web_search', 'run_checks', 'read_note', 'list_notes', 'bash', 'edit', 'write', 'write_note'],
+    fast: ['read', 'grep', 'find', 'ls', 'inspect_git', 'fetch_url', 'web_search', 'run_checks', 'read_note', 'list_notes', 'bash', 'edit', 'write', 'write_note'],
+    review: ['read', 'grep', 'find', 'ls', 'inspect_git', 'fetch_url', 'web_search', 'run_checks', 'read_note', 'list_notes'],
   };
   // Unknown/foreign tools (fork extras, upstream delegation, arbitrary mutations)
   // are active before the switch and must all be stripped from every role.
@@ -32,7 +32,7 @@ test('role tools are exact allowlists; unknown tools never leak into any role', 
     assert.deepEqual([...agentTools(role, foreign)].sort(), [...expected[role]].sort(), role);
   }
   const review = agentTools('review');
-  for (const tool of ['bash', 'powershell', 'edit', 'write', 'edit_soft', 'delegate', 'terminal_create', 'terminal_input', 'terminal_wait', 'subagent_spawn']) {
+  for (const tool of ['bash', 'powershell', 'edit', 'write', 'write_note', 'edit_soft', 'delegate', 'terminal_create', 'terminal_input', 'terminal_wait', 'subagent_spawn']) {
     assert.ok(!review.includes(tool), tool);
   }
 });
