@@ -248,6 +248,16 @@ export function buildWindowsSupervisorSpawn({ executable, args, cwd, env, timeou
   };
 }
 
+/** Whole-run completion is decided from top-level signals only. Nested
+ *  `# tests`/`# fail` summaries are fallback display counts, never proof that
+ *  the run finished; a nested plan that does not match its observed points also
+ *  means the run is incomplete. */
+function isTapComplete({ planTotal, topLevelPoints, topSummaryTests, topSummaryFail, nestedPlanMismatch }) {
+  if (nestedPlanMismatch) return false;
+  if (planTotal !== null) return topLevelPoints === planTotal;
+  return topSummaryTests !== null || topSummaryFail !== null;
+}
+
 /** Summarize TAP output to failures only, keeping indented diagnostic blocks
  *  and nested subtest failures. Reported top-level summary counts are preferred
  *  over raw point counting; `# TODO`/`# SKIP` points are never failures, and a
@@ -274,6 +284,16 @@ export function summarizeTap(output, { maxFailures = 20, maxSummaryChars = 12000
   let summaryFail = null;
   let summaryPass = null;
   let summaryTests = null;
+  let topSummaryFail = null;
+  let topSummaryTests = null;
+  let nestedPlanMismatch = false;
+  const nestedPoints = new Map(); // indent -> observed points at that nested level
+  const nestedPlans = new Map(); // validate at scope close, supporting plan-first TAP too
+  const finishNestedScope = indent => {
+    if (nestedPlans.has(indent) && (nestedPoints.get(indent) ?? 0) !== nestedPlans.get(indent)) nestedPlanMismatch = true;
+    nestedPlans.delete(indent);
+    nestedPoints.delete(indent);
+  };
   const points = [];
   const subtestAt = new Map(); // indent -> subtest name
   const unstructured = [];
@@ -308,6 +328,9 @@ export function summarizeTap(output, { maxFailures = 20, maxSummaryChars = 12000
       const isSkip = dir === 'SKIP';
       const isTodo = dir === 'TODO';
       const ind = indent.length;
+      // The enclosing result closes deeper TAP scopes even when optional
+      // '# Subtest:' headers are absent between sibling subtests.
+      for (const k of new Set([...nestedPoints.keys(), ...nestedPlans.keys()])) if (k > ind) finishNestedScope(k);
       const pathPrefix = ind > 0
         ? [...subtestAt.entries()].filter(([k]) => k < ind).sort((a, b) => a[0] - b[0]).map(([, n]) => n)
         : [];
@@ -316,6 +339,8 @@ export function summarizeTap(output, { maxFailures = 20, maxSummaryChars = 12000
       if (ind === 0) {
         topLevelPoints++;
         if (!ok && !isSkip && !isTodo) topLevelFail++;
+      } else {
+        nestedPoints.set(ind, (nestedPoints.get(ind) ?? 0) + 1);
       }
       continue;
     }
@@ -324,7 +349,13 @@ export function summarizeTap(output, { maxFailures = 20, maxSummaryChars = 12000
     if (plan) {
       sawTap = true;
       const [, indent, n] = plan;
-      if (indent.length === 0 && planTotal === null) planTotal = Number(n);
+      const total = Number(n);
+      if (indent.length === 0) {
+        if (planTotal === null) planTotal = total;
+      } else {
+        if (nestedPlans.has(indent.length) && nestedPlans.get(indent.length) !== total) nestedPlanMismatch = true;
+        nestedPlans.set(indent.length, total);
+      }
       continue;
     }
 
@@ -334,13 +365,21 @@ export function summarizeTap(output, { maxFailures = 20, maxSummaryChars = 12000
       const ind = sub[1].length;
       subtestAt.set(ind, sub[2].trim());
       for (const k of [...subtestAt.keys()]) if (k > ind) subtestAt.delete(k);
+      // A new subtest header starts a fresh scope for every deeper level, but
+      // sibling subtests at the same indent share one plan (e.g. node emits a
+      // single `1..N` for all children of a parent), so the current level keeps
+      // accumulating.
+      for (const k of new Set([...nestedPoints.keys(), ...nestedPlans.keys()])) if (k > ind) finishNestedScope(k);
       continue;
     }
 
     const failedOf = line.match(failedOfRe);
     if (failedOf) {
       sawTap = true;
-      if (summaryFail === null) summaryFail = Number(failedOf[2]);
+      const [, indent, n] = failedOf;
+      const value = Number(n);
+      if (indent.length === 0) topSummaryFail = value;
+      if (summaryFail === null) summaryFail = value;
       continue;
     }
 
@@ -350,6 +389,10 @@ export function summarizeTap(output, { maxFailures = 20, maxSummaryChars = 12000
       const [, indent, key, n] = count;
       const value = Number(n);
       const top = indent.length === 0;
+      if (top) {
+        if (key === 'fail') topSummaryFail = value;
+        else if (key === 'tests') topSummaryTests = value;
+      }
       if (key === 'fail' && (top || summaryFail === null)) summaryFail = value;
       else if (key === 'pass' && (top || summaryPass === null)) summaryPass = value;
       else if (key === 'tests' && (top || summaryTests === null)) summaryTests = value;
@@ -362,6 +405,8 @@ export function summarizeTap(output, { maxFailures = 20, maxSummaryChars = 12000
     if (line.trim() === '' || /^\s+#/.test(line) || yamlMarkerRe.test(line)) continue;
     if (line.trimStart() === line) noteUnstructured(line.trim());
   }
+
+  for (const k of [...nestedPlans.keys()]) finishNestedScope(k);
 
   if (!sawTap) {
     return {
@@ -414,11 +459,18 @@ export function summarizeTap(output, { maxFailures = 20, maxSummaryChars = 12000
   const pass = summaryPass ?? rawPass;
   const total = summaryTests ?? planTotal ?? (pass + fail);
 
-  const planComplete = planTotal !== null && topLevelPoints === planTotal;
-  // An explicit plan is authoritative: the run is only complete when every
-  // planned test point was observed, regardless of any summary counts. Without
-  // a plan, a top-level summary (`# tests` or `# fail`) signals completion.
-  const complete = !bailout && (planTotal !== null ? planComplete : (summaryTests !== null || summaryFail !== null));
+  // An explicit top-level plan is authoritative: the run is only complete when
+  // every planned top-level point was observed, regardless of any summary
+  // counts. Without a plan, only a top-level summary (`# tests` or `# fail`)
+  // signals completion; nested summaries never do, and a nested plan that does
+  // not match its observed points also makes the run incomplete.
+  const complete = !bailout && isTapComplete({
+    planTotal,
+    topLevelPoints,
+    topSummaryTests,
+    topSummaryFail,
+    nestedPlanMismatch,
+  });
 
   const explicitPass = !bailout && fail === 0 && complete && (planTotal === null || planTotal > 0);
 

@@ -842,3 +842,146 @@ not ok 1 - parent # ${directive} later
     assert.equal(result.failures.length, 0);
   }
 });
+
+test('indented #fail/#tests summaries never establish whole-run completion', () => {
+  const tap = [
+    'TAP version 13',
+    '# Subtest: parent',
+    '    ok 1 - child',
+    '    1..2',
+    '    # fail 0',
+  ].join('\n');
+  const summarized = summarizeTap(tap);
+  assert.ok(summarized.isTap);
+  assert.equal(summarized.complete, false);
+  assert.equal(summarized.explicitPass, false);
+  assert.ok(!summarized.summary.includes('All tests passed'));
+  assert.ok(summarized.summary.includes('partial TAP'));
+});
+
+test('a truncated nested plan invalidates an otherwise consistent top-level plan', () => {
+  const tap = [
+    'TAP version 13',
+    '# Subtest: parent',
+    '    ok 1 - child',
+    '    1..2',
+    'ok 1 - parent',
+    '1..1',
+    '# fail 0',
+  ].join('\n');
+  const summarized = summarizeTap(tap);
+  assert.equal(summarized.complete, false);
+  assert.equal(summarized.explicitPass, false);
+  assert.ok(!summarized.summary.includes('All tests passed'));
+});
+
+test('a valid nested node-style suite with a matching nested plan still passes', () => {
+  const tap = [
+    'TAP version 13',
+    '# Subtest: parent',
+    '    ok 1 - child',
+    '    1..1',
+    'ok 1 - parent',
+    '1..1',
+    '# tests 2',
+    '# pass 2',
+    '# fail 0',
+  ].join('\n');
+  const summarized = summarizeTap(tap);
+  assert.equal(summarized.complete, true);
+  assert.equal(summarized.explicitPass, true);
+  assert.equal(summarized.fail, 0);
+  assert.equal(summarized.pass, 2);
+  assert.equal(summarized.total, 2);
+  assert.ok(summarized.summary.includes('All tests passed'));
+});
+
+test('sibling subtests sharing one nested plan stay complete (node suite shape)', () => {
+  const tap = [
+    'TAP version 13',
+    '# Subtest: parent',
+    '    # Subtest: c1',
+    '    ok 1 - c1',
+    '    # Subtest: c2',
+    '    ok 2 - c2',
+    '    1..2',
+    'ok 1 - parent',
+    '1..1',
+    '# tests 3',
+    '# pass 3',
+    '# fail 0',
+  ].join('\n');
+  const summarized = summarizeTap(tap);
+  assert.equal(summarized.complete, true);
+  assert.equal(summarized.explicitPass, true);
+  assert.equal(summarized.fail, 0);
+});
+
+test('a missing parent and truncated nested plan is reported failed at execution even with exit 0', async () => {
+  const dir = await tempDir('piastra-checks-nested-partial-');
+  try {
+    const tap = [
+      'TAP version 13',
+      '# Subtest: parent',
+      '    ok 1 - child',
+      '    1..2',
+      '    # fail 0',
+    ].join('\n');
+    const res = await executeCheck(
+      { name: 'nested-partial', command: ['node', '-e', `process.stdout.write(${JSON.stringify(tap)})`] },
+      { cwd: dir, logDir: dir },
+    );
+    assert.equal(res.details.status, 'failed');
+    assert.equal(res.details.exitCode, 0);
+    assert.ok(res.text.includes('TAP incomplete or truncated'));
+    assert.ok(!res.text.includes('PASSED'));
+    assert.ok(!res.text.includes('All tests passed'));
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+test('valid nested plan-first TAP does not regress while incomplete scopes fail', () => {
+  const tap = `TAP version 13
+# Subtest: parent
+    1..2
+    ok 1 - first
+    ok 2 - second
+ok 1 - parent
+1..1
+`;
+  assert.equal(summarizeTap(tap).complete, true);
+  assert.equal(summarizeTap(tap.replace('    ok 2 - second\n', '')).complete, false);
+});
+
+test('headerless sibling TAP scopes close at enclosing results for both plan orders', () => {
+  for (const planFirst of [false, true]) {
+    const child = name => planFirst ? `    1..1\n    ok 1 - child ${name}\n` : `    ok 1 - child ${name}\n    1..1\n`;
+    const tap = `TAP version 13\n${child('A')}ok 1 - parent A\n${child('B')}ok 2 - parent B\n1..2\n`;
+    assert.equal(summarizeTap(tap).explicitPass, true);
+    assert.equal(summarizeTap(tap.replace('    ok 1 - child A\n', '')).complete, false);
+  }
+});
+
+test('a valid nested node-style suite passes end to end', async () => {
+  const dir = await tempDir('piastra-checks-nested-valid-');
+  try {
+    const tap = [
+      'TAP version 13',
+      '# Subtest: parent',
+      '    ok 1 - child',
+      '    1..1',
+      'ok 1 - parent',
+      '1..1',
+      '# tests 2',
+      '# pass 2',
+      '# fail 0',
+    ].join('\n');
+    const res = await executeCheck(
+      { name: 'nested-valid', command: ['node', '-e', `process.stdout.write(${JSON.stringify(tap)})`] },
+      { cwd: dir, logDir: dir },
+    );
+    assert.equal(res.details.status, 'passed');
+    assert.equal(res.details.exitCode, 0);
+    assert.ok(res.text.includes('PASSED (exit 0)'));
+    assert.ok(res.text.includes('All tests passed'));
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
