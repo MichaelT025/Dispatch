@@ -22,9 +22,10 @@ model segment is disabled, the terminal is too narrow, or Dispatch is absent.
 Standalone Atelier/plain Pi never gains this hint from a legacy Agent status.
 Re-run the managed installer and restart Pi to update installed copies.
 
-`node bin/dispatch.mjs --help` (or `-h`) provides a short terminal overview
-without starting Pi. The package's `dispatch` bin is help-only for now;
-setup and full CLI/WebUI launch modes are a separate implementation phase.
+`dispatch --help` (or `node bin/dispatch.mjs -h` from this checkout) provides
+a short terminal overview without starting Pi. `dispatch setup` performs
+explicit authentication/configuration, `dispatch` starts the CLI, and
+`dispatch --web` starts the packaged WebUI in the foreground.
 
 ## Design constraints
 
@@ -220,7 +221,7 @@ Keys while a worker is open:
   picker between `/agent` and the leader `a` action; registers `/dispatch-help`.
 - `extensions/piastra/help.mjs` — shared help sections and terminal formatter.
 - `extensions/piastra/help-view.ts` — section picker and scrollable help viewer.
-- `bin/dispatch.mjs` — dependency-free terminal help entry point.
+- `bin/dispatch.mjs` — terminal entry point for help, setup and launching.
 
 ## Tests
 

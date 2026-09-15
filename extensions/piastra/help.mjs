@@ -2,7 +2,7 @@
  * Shared Dispatch help content.
  *
  * Pure data + plain-text formatters with no Pi imports, so the TUI viewer,
- * the non-TUI command path, and the parent help-only bin can all share one
+ * the non-TUI command path, and the Dispatch launcher can all share one
  * factual source. `docs/shortcuts.md` is authoritative for key mappings;
  * command behavior below is verified against the extension sources
  * (piastra/index.ts, agents.mjs, pi-queue/index.ts, pi-worktree,
@@ -11,11 +11,9 @@
  * node_modules/@earendil-works/pi-coding-agent/dist/core/slash-commands.js.
  *
  * Factual boundaries (do not regress):
- * - No standalone dispatch runtime, setup wizard, or web/launcher flags
- *   exist in this tree; none are claimed. The full launcher/setup is
- *   pending; only the help-only `dispatch --help` overview exists.
- * - No plain-pi filesystem isolation exists; worker "isolation" is a tool
- *   allowlist, not a security sandbox.
+ * - Packaged Dispatch has explicit setup and isolated agent settings.
+ *   The legacy checkout installer still modifies selected Pi settings.
+ * - Worker "isolation" is a tool allowlist, not a security sandbox.
  * - Unavailable models error; no automatic fallback is used.
  * - /session and /name are native; /sessions and /skills are NOT native
  *   commands and are never listed as such.
@@ -42,9 +40,15 @@ export const helpSections = [
       '  workers with requirements, paths, and the milestone Git baseline.',
       '- Independent verification: ask for a review worker at a Git baseline.',
       '',
-      'Full launcher/setup is pending: use the Pi CLI with this extension',
-      'installed. A help-only dispatch bin prints the short overview with',
-      'dispatch --help (or -h).',
+      'Terminal: dispatch setup signs in to Codex; OpenCode Go is optional.',
+      'Skipping Go seeds General and Fast with Codex Luna, medium reasoning.',
+      'This is an explicit setup choice, not automatic provider fallback.',
+      'dispatch opens the CLI; dispatch --web opens the packaged WebUI.',
+      'Use --port N or --no-open with --web. Default: 127.0.0.1:8790.',
+      'Close the server with Ctrl+C; closing the browser leaves it running.',
+      'Dispatch settings live in ~/.dispatch (override: DISPATCH_HOME).',
+      'Existing plain Pi settings and credentials are not changed.',
+      'dispatch --help (or -h) prints the short terminal overview.',
     ],
   },
   {
@@ -226,7 +230,7 @@ export const helpSections = [
       '',
       'Worktrees (pi-worktree, managed): /worktree, /wt (same handler).',
       'Subcommands: ls, add, open, resume, rm, pr (plus help).',
-      'Optional managed addons (only if installed): /todos (pi-todo),',
+      'Bundled in Dispatch; optional in legacy Pi installs: /todos (pi-todo),',
       '/atelier (Pi Atelier: /atelier display, /atelier sidebar [on|off],',
       '/atelier sidebar tools [on|off]; Alt+A toggles when configured,',
       'Ctrl+Shift+R resizes the visible sidebar).',
@@ -263,7 +267,15 @@ export function formatTerminalHelp() {
   return [
     'Dispatch — commands and shortcuts',
     '',
-    'Usage: dispatch --help | -h',
+    'Usage: dispatch [Pi options]        Interactive CLI',
+    '       dispatch setup               Explicit sign-in and configuration',
+    '       dispatch --web [--port N] [--no-open]',
+    '       dispatch --help | -h          This overview',
+    '       dispatch --version            Package version',
+    '',
+    'Run dispatch setup first: Codex required, OpenCode Go optional.',
+    'Web binds 127.0.0.1:8790 by default. Ctrl+C stops the foreground server.',
+    'Settings: ~/.dispatch (DISPATCH_HOME overrides); plain Pi is unchanged.',
     '',
     'Roles: /agent [orchestrator|general|fast|review]; /dispatch shows models.',
     'Workers: ask the orchestrator to delegate; /workers watches live output.',
@@ -276,9 +288,9 @@ export function formatTerminalHelp() {
     '  /workers detail: Left/Right/Tab/Shift+Tab siblings, Up parent,',
     '  Down picker; /hotkeys lists native bindings.',
     '',
-    'Full launcher/setup is pending; this is the short current',
-    'command/key overview. /dispatch-help [section] prints full text',
-    'outside the TUI.',
+    'In the TUI, /dispatch-help [section] opens commands, shortcuts and tips.',
+    'Outside the TUI, it shows help through notifications.',
+    'Self-update is not yet available in this development phase.',
     'Sections: ' + sectionIds().join(', ') + '.',
   ].join('\n');
 }

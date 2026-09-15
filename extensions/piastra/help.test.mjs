@@ -30,9 +30,10 @@ test('content names real commands, real shortcuts, and when-to-use tips', () => 
   assert.match(all, /When to use what/, 'help gives when-to-use tips');
 });
 
-test('content marks boundaries: launcher pending, no sandbox, no fallback, no Luna default', () => {
+test('content describes setup and explicit defaults without a sandbox or automatic fallback claim', () => {
   const all = formatHelp('all');
-  assert.match(all, /Full launcher\/setup is pending/, 'setup/launcher marked pending');
+  assert.match(all, /dispatch setup signs in to Codex/);
+  assert.match(all, /Skipping Go seeds General and Fast with Codex Luna, medium reasoning/);
   assert.match(all, /NOT a security sandbox/, 'worker isolation is not a sandbox');
   assert.match(all, /No automatic fallback/, 'no fallback claim');
   assert.ok(!all.includes('LunaMedium'), 'LunaMedium onboarding is not presented as current');
@@ -60,8 +61,10 @@ test('formatTerminalHelp starts with the title, documents dispatch --help, and s
   const text = formatTerminalHelp();
   assert.ok(text.length < formatHelp('all').length, 'terminal overview is shorter than full text');
   assert.ok(text.startsWith('Dispatch — commands and shortcuts'), 'starts with the title');
-  assert.match(text, /Usage: dispatch --help \| -h/, 'documents the help-only bin');
-  assert.match(text, /Full launcher\/setup is pending/, 'pending state stated once');
+  assert.match(text, /dispatch --help \| -h/, 'documents terminal help');
+  assert.match(text, /dispatch setup/);
+  assert.match(text, /dispatch --web/);
+  assert.ok(!text.includes('Full launcher/setup is pending'));
   for (const cmd of ['/agent', '/workers', '/dispatch-help', '/q ', '/st ', '/queue-drain']) {
     assert.ok(text.includes(cmd), `overview names ${cmd}`);
   }

@@ -23,7 +23,8 @@
     "test:fork": "npm test",
     "test:integration": "node --experimental-strip-types --test tests/integration/fork-runtime.test.mjs",
     "build:release": "node scripts/build-release.mjs",
-    "test:release": "node --test \"lib/*.test.mjs\""
+    "test:release": "node --test \"lib/*.test.mjs\"",
+    "test:package": "node --test tests/release/packaged-runtime.test.mjs"
   },
   "dependencies": {
     "@agegr/pi-web": "0.9.1",
