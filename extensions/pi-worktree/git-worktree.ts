@@ -9,6 +9,7 @@
  *   /worktree open <branch>        start a fresh session in the worktree
  *   /worktree rm <branch>          remove worktree (confirms first)
  *   /worktree pr <number>          verify PR head, open piastra/pr/<number>
+ *   /worktree resume               pick a session from ANY checkout of the repo
  *
  * In the interactive CLI, `add` (new or existing), `open`, a worktree picked
  * from `ls`, and `pr` start a brand-new empty session in the target worktree
@@ -43,6 +44,8 @@ import { existsSync } from "node:fs";
 import { readFile, rm, writeFile } from "node:fs/promises";
 import { basename, join, resolve } from "node:path";
 import { homedir } from "node:os";
+import { pruneEmptySessions } from "./empty-sessions.mjs";
+import { groupSessions, renderPicker, samePath as sameCheckoutPath } from "./resume.mjs";
 
 type ExecResult = { code: number; stdout: string; stderr: string };
 
@@ -925,13 +928,105 @@ async function createFromPr(
 	}
 }
 
+/**
+ * Switch the running CLI to an existing session file (any checkout of the
+ * repository). `ctx.switchSession` rebuilds the runtime in the session's own
+ * cwd, so tools, Git and PiAstra workers follow it — the same mechanism
+ * `/worktree open` uses for a fresh session, with the same guards.
+ */
+async function switchToSessionFile(
+	pi: ExtensionAPI,
+	ctx: ExtensionCommandContext,
+	target: { path: string; cwd: string; label: string },
+	branch: string,
+): Promise<void> {
+	if (ctx.mode !== "tui") {
+		ctx.ui.notify(
+			`Session switching is available only in the interactive CLI.\nResume it with:\ncd "${target.cwd}" && pi --session "${target.path}"`,
+			"info",
+		);
+		return;
+	}
+	const refusal = switchRefusal(pi, ctx);
+	if (refusal) {
+		ctx.ui.notify(`${refusal}\n\nThe session was not changed.`, "warning");
+		return;
+	}
+	try {
+		const result = await ctx.switchSession(target.path, {
+			withSession: async (replacement) => {
+				replacement.ui.notify(
+					`Resumed "${target.label}" in ${branch}\n${target.cwd}\n\nTools, extensions, Git and PiAstra workers now use this checkout.`,
+					"info",
+				);
+			},
+		});
+		if (result.cancelled) {
+			ctx.ui.notify("Session switch was cancelled; the current conversation is unchanged.", "warning");
+		}
+	} catch (error: any) {
+		try {
+			ctx.ui.notify(`Could not resume the session:\n${error?.message || error}`, "error");
+		} catch { /* the old context may be gone after teardown */ }
+	}
+}
+
+/**
+ * `/worktree resume`: every session of the repository, grouped by checkout,
+ * in one picker. Picking a session switches to it (in its own checkout);
+ * picking a checkout header starts a fresh session there. Sessions that never
+ * received a message are pruned on the way — they are the leftovers of
+ * fresh-session switches nobody typed into.
+ */
+async function resumeAcrossWorktrees(
+	pi: ExtensionAPI,
+	ctx: ExtensionCommandContext,
+	cwd: string,
+): Promise<void> {
+	const worktrees = await listWorktrees(pi, cwd);
+	if (worktrees.length === 0) {
+		ctx.ui.notify("No worktrees found", "info");
+		return;
+	}
+	const all = await SessionManager.listAll();
+	const repoSessions = all.filter((info) =>
+		worktrees.some((wt) => sameCheckoutPath(wt.path, info.cwd)),
+	);
+	const currentSessionFile = ctx.sessionManager.getSessionFile();
+	const removed = await pruneEmptySessions(repoSessions, currentSessionFile);
+	const groups = groupSessions(worktrees, repoSessions, ctx.cwd);
+	const { lines, targets } = renderPicker(groups, { currentSessionFile, home: homedir() });
+
+	if (!ctx.hasUI) {
+		ctx.ui.notify(lines.join("\n"), "info");
+		return;
+	}
+	const title = removed.length > 0
+		? `Sessions across worktrees (removed ${removed.length} empty session file${removed.length === 1 ? "" : "s"})`
+		: "Sessions across worktrees";
+	const choice = await ctx.ui.select(title, lines);
+	if (!choice) return;
+	const target = targets[lines.indexOf(choice)];
+	if (!target) return;
+	if (target.kind === "worktree") {
+		await activateWorktree(pi, ctx, target.path, target.branch, false);
+		return;
+	}
+	if (target.live) {
+		ctx.ui.notify("That is the current session.", "info");
+		return;
+	}
+	const branch = groups.find((g) => sameCheckoutPath(g.worktree.path, target.cwd))?.worktree.branch ?? "detached";
+	await switchToSessionFile(pi, ctx, target, branch);
+}
+
 function parseArgs(raw: string): { cmd: string; rest: string } {
 	const trimmed = raw.trim();
 	if (!trimmed) return { cmd: "ls", rest: "" };
 	const [first, ...restParts] = trimmed.split(/\s+/);
 	const rest = restParts.join(" ").trim();
 	const sub = first.toLowerCase();
-	if (["ls", "list", "add", "open", "rm", "remove", "pr", "help"].includes(sub)) {
+	if (["ls", "list", "add", "open", "rm", "remove", "pr", "resume", "help"].includes(sub)) {
 		return { cmd: sub === "list" ? "ls" : sub === "remove" ? "rm" : sub, rest };
 	}
 	// Default: treat first token (and rest) as branch name for add.
@@ -941,9 +1036,9 @@ function parseArgs(raw: string): { cmd: string; rest: string } {
 export default function (pi: ExtensionAPI) {
 	const command: Parameters<ExtensionAPI["registerCommand"]>[1] = {
 		description:
-			"Create, list, open, or remove git worktrees (/worktree, /worktree ls|add|open|rm|pr)",
+			"Create, list, open, resume, or remove git worktrees (/worktree, /worktree ls|add|open|rm|pr|resume)",
 		getArgumentCompletions: (prefix) => {
-			const subs = ["ls", "add", "open", "rm", "pr", "help"];
+			const subs = ["ls", "add", "open", "rm", "pr", "resume", "help"];
 			const p = prefix.trim();
 			// Complete subcommands only for the first token.
 			if (!p.includes(" ")) {
@@ -970,6 +1065,7 @@ export default function (pi: ExtensionAPI) {
 							"/worktree open <branch>   fresh session there",
 							"/worktree rm <branch>     remove (keeps branch)",
 							"/worktree pr <number>     worktree from PR",
+							"/worktree resume          pick a session from any checkout (switches there)",
 						].join("\n"),
 						"info",
 					);
@@ -1002,6 +1098,10 @@ export default function (pi: ExtensionAPI) {
 						return;
 					}
 					await removeWorktree(pi, ctx, cwd, rest.split(/\s+/)[0]);
+					return;
+				}
+				case "resume": {
+					await resumeAcrossWorktrees(pi, ctx, cwd);
 					return;
 				}
 				case "pr": {
