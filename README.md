@@ -1,3 +1,8 @@
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/dispatch-light.png" />
+  <img src="assets/dispatch-dark.png" alt="Dispatch logo" width="120" />
+</picture>
+
 # Dispatch
 
 Dispatch (formerly PiAstra) is a lightweight Pi setup with Astra planning, OpenCode Go workers, and Astra milestone review.
