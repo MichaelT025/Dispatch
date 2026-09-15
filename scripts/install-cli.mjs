@@ -18,7 +18,7 @@ try {
 } catch (error) { if (error.code !== 'ENOENT') throw error; }
 const installed = path.join(agentDir, 'piastra', 'package');
 for (const dir of ['extensions/piastra', 'extensions/pi-ui', 'extensions/pi-worktree', 'config', 'roles']) await mkdir(path.join(installed, dir), { recursive: true });
-for (const file of ['extensions/piastra/index.ts', 'extensions/piastra/policy.mjs', 'extensions/piastra/agents.mjs', 'extensions/piastra/prefs.mjs', 'extensions/piastra/guard.mjs', 'extensions/piastra/progress.mjs', 'extensions/piastra/sidebar.mjs', 'extensions/piastra/worker-bridge.mjs', 'extensions/piastra/worker-view.ts', 'extensions/piastra/worker-render.ts', 'extensions/piastra/shortcuts.ts', 'extensions/pi-worktree/git-worktree.ts', 'extensions/pi-worktree/LICENSE', 'config/agents.json', ...['orchestrator', 'general', 'fast', 'review'].map(role => `roles/${role}.md`)]) {
+for (const file of ['extensions/piastra/index.ts', 'extensions/piastra/policy.mjs', 'extensions/piastra/agents.mjs', 'extensions/piastra/prefs.mjs', 'extensions/piastra/guard.mjs', 'extensions/piastra/progress.mjs', 'extensions/piastra/sidebar.mjs', 'extensions/piastra/worker-bridge.mjs', 'extensions/piastra/worker-view.ts', 'extensions/piastra/worker-panel.ts', 'extensions/piastra/worker-render.ts', 'extensions/piastra/shortcuts.ts', 'extensions/pi-worktree/git-worktree.ts', 'extensions/pi-worktree/LICENSE', 'config/agents.json', ...['orchestrator', 'general', 'fast', 'review'].map(role => `roles/${role}.md`)]) {
   await copyFile(path.join(root, file), path.join(installed, file));
 }
 // The preference store (prefs.mjs) is the only PiAstra module with a plain npm
@@ -44,15 +44,20 @@ if (!existsSync(queueSourceIndex)) {
 const queueTarget = path.join(installed, 'extensions', 'pi-queue');
 const queueIndex = path.join(queueTarget, 'index.ts');
 // Vendored forks ship runtime files only: tests never load in the installed copy.
-const vendoredRuntimeFilter = (source) =>
-  !/(^|[\\/])__tests__([\\/]|$)/.test(source) && !/\.test\.[a-z]+$|\.spec\.[a-z]+$/i.test(source);
-await cp(queueSource, queueTarget, { recursive: true, force: true, filter: vendoredRuntimeFilter });
+// Root-relative so a checkout nested under `tests`/`__tests__` ancestors (e.g.
+// C:/tests/PiAstra) does not filter the fork root itself: only paths relative
+// to each fork source are tested.
+const vendoredRuntimeFilter = (sourceRoot) => (source) => {
+  const relative = path.relative(sourceRoot, source);
+  return !/(^|[\\/])(__tests__|tests)([\\/]|$)/.test(relative) && !/\.test\.[a-z]+$|\.spec\.[a-z]+$/i.test(relative);
+};
+await cp(queueSource, queueTarget, { recursive: true, force: true, filter: vendoredRuntimeFilter(queueSource) });
 // Vendor the compact-transcript fork runtime files the same way: extension
 // index + dependencies + LICENSE/README/package.json, tests excluded.
 const compactSource = path.join(root, 'extensions', 'pi-compact-transcript');
 const compactTarget = path.join(installed, 'extensions', 'pi-compact-transcript');
 const compactIndex = path.join(compactTarget, 'index.ts');
-await cp(compactSource, compactTarget, { recursive: true, force: true, filter: vendoredRuntimeFilter });
+await cp(compactSource, compactTarget, { recursive: true, force: true, filter: vendoredRuntimeFilter(compactSource) });
 // Vendor the managed Atelier fork runtime files the same way: full npm layout
 // (extensions/index.ts, src/, assets/, LICENSE, README.md, package.json),
 // tests excluded. Copies happen here, before any settings.json mutation, so a
@@ -70,7 +75,47 @@ if (atelierActive) {
     );
   }
   const atelierTarget = path.join(installed, 'extensions', 'pi-atelier');
-  await cp(atelierSource, atelierTarget, { recursive: true, force: true, filter: vendoredRuntimeFilter });
+  await cp(atelierSource, atelierTarget, { recursive: true, force: true, filter: vendoredRuntimeFilter(atelierSource) });
+}
+// The managed pi-todo fork (@juicesharp/rpiv-todo): it migrates automatically
+// when the user has an enabled upstream npm entry, and afterwards stays in sync
+// on every rerun because the managed registration itself counts as active.
+// Without an enabled upstream entry and without a managed registration, todo
+// packages/extensions are left completely alone (no copy, no disable, no
+// registration) so users without rpiv-todo never gain it implicitly.
+const todoManagedIndex = path.join(installed, 'extensions', 'pi-todo', 'index.ts');
+const todoSource = path.join(root, 'extensions', 'pi-todo');
+const todoSourceIndex = path.join(todoSource, 'index.ts');
+const todoSourceVendorIndex = path.join(todoSource, 'vendor', 'rpiv-config', 'index.ts');
+const upstreamTodo = /^npm:@juicesharp\/rpiv-todo(?:@.*)?$/i;
+const todoEntrySource = (entry) => (typeof entry === 'string' ? entry : entry?.source);
+const todoEntryEnabled = (entry) => {
+  if (typeof entry === 'string') return true;
+  if (!entry || typeof entry !== 'object') return false;
+  if (Array.isArray(entry.extensions) && entry.extensions.length === 0) return false;
+  if (entry.autoload === false) return false;
+  return true;
+};
+const todoAlreadyManaged = (settings.extensions || []).includes(todoManagedIndex);
+const todoActive = (settings.packages || []).some(
+  (entry) => upstreamTodo.test(todoEntrySource(entry) || '') && todoEntryEnabled(entry),
+) || todoAlreadyManaged;
+if (todoActive) {
+  if (!existsSync(todoSourceIndex) || !existsSync(todoSourceVendorIndex)) {
+    throw new Error(
+      `Missing pi-todo fork runtime: ${todoSourceIndex}\n` +
+        'The vendored fork (extensions/pi-todo) with its essential dependency file\n' +
+        `(${todoSourceVendorIndex}) is required for the managed todo installation; refusing to update settings.json.`,
+    );
+  }
+  // Copy before any settings.json mutation so a half-installed fork can never
+  // be referenced by settings. Config/history/XDG layers are never touched: the
+  // vendored copy resolves rpiv-todo config exactly like upstream.
+  await cp(todoSource, path.join(installed, 'extensions', 'pi-todo'), {
+    recursive: true,
+    force: true,
+    filter: vendoredRuntimeFilter(todoSource),
+  });
 }
 const extension = path.join(installed, 'extensions', 'piastra', 'index.ts');
 const worktreeExtension = path.join(installed, 'extensions', 'pi-worktree', 'git-worktree.ts');
@@ -134,10 +179,29 @@ if (atelierActive) {
     return entry;
   });
 }
+// The managed pi-todo fork (migration conditions computed above): register the
+// managed index exactly once, drop the current checkout's development entry for
+// this fork, and disable every upstream npm entry (bare, versioned, or ranged;
+// string or object form) via extensions: [] while preserving the package entry
+// and its other fields. Nothing else — package config, history, other packages,
+// or the XDG config layer — is modified.
+if (todoActive) {
+  const developmentTodoPath = path.join(root, 'extensions', 'pi-todo', 'index.ts');
+  settings.extensions = [...new Set([
+    ...(settings.extensions || []).filter((p) => p !== developmentTodoPath),
+    todoManagedIndex,
+  ])];
+  settings.packages = (settings.packages || []).map((entry) => {
+    if (upstreamTodo.test(todoEntrySource(entry) || '')) {
+      return { ...(typeof entry === 'string' ? { source: entry } : entry), extensions: [] };
+    }
+    return entry;
+  });
+}
 const config = JSON.parse(await readFile(path.join(root, 'config/agents.json'), 'utf8')).orchestrator;
 const slash = config.model.indexOf('/');
 settings.defaultProvider = config.model.slice(0, slash);
 settings.defaultModel = config.model.slice(slash + 1);
 settings.defaultThinkingLevel = config.thinking;
 await writeFile(target, JSON.stringify(settings, null, 2) + '\n');
-console.log(`PiAstra installed in ${target}\nRun pi from any directory. /piastra shows the roles.\nStandalone extension copy: ${installed}\nRe-run this installer to update the installed code and role configuration.${atelierActive ? '\nManaged Atelier fork installed and upstream npm:pi-atelier extension disabled.' : ''}`);
+console.log(`PiAstra installed in ${target}\nRun pi from any directory. /piastra shows the roles.\nStandalone extension copy: ${installed}\nRe-run this installer to update the installed code and role configuration.${atelierActive ? '\nManaged Atelier fork installed and upstream npm:pi-atelier extension disabled.' : ''}${todoActive ? '\nManaged pi-todo fork installed and upstream npm:@juicesharp/rpiv-todo extension disabled.' : ''}`);
