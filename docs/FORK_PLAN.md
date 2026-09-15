@@ -82,11 +82,17 @@ npm run start:fork [workspace]        # node scripts/start-fork.mjs
 3. Role tools are exact allowlists (`agentTools(role)`), not a union: each
    switch replaces the active set with that role's fixed list, so foreign/unknown
    tools — fork extras (`todo_list`, terminal tools, `edit_soft`), upstream
-   delegation, anything arbitrary — cannot leak into any role. Orchestrator:
-   read/grep/find/ls/inspect_git/fetch_url + bash/edit/write + delegate. General
-   and fast: read/grep/find/ls/inspect_git/fetch_url + bash/edit/write. Review:
-   read/grep/find/ls/inspect_git/fetch_url only (no bash, edit, write, terminal,
-   delegate). Verified by extension unit tests and a live-SDK role switch test.
+   delegation, anything arbitrary — cannot leak into any role. Read side for all
+   roles: read/grep/find/ls/inspect_git/fetch_url/web_search/run_checks plus
+   note reading (read_note/list_notes); run_checks executes only allowlisted
+   commands from the trusted workspace's config/checks.json. Review can run
+   checks but cannot edit source; test execution is not a filesystem sandbox.
+   Shared notes are scoped to the parent session (not one delegation batch).
+   See [agent-tools.md](agent-tools.md) for configuration and trust boundaries.
+   Orchestrator adds bash/edit/write/write_note + delegate. General and fast
+   add bash/edit/write/write_note. Review gets the read side only (no bash,
+   edit, write, write_note, terminal, delegate). Verified by extension unit
+   tests and a live-SDK role switch test.
 
 ## Environment / coordination notes for the UI worker
 

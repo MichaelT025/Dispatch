@@ -31,11 +31,43 @@ export function validateTasks(tasks) {
   }
 }
 
-export function gitArguments(operation, revision) {
-  if (!['status', 'diff', 'log', 'show'].includes(operation)) throw new Error('Unsupported Git operation.');
-  if (revision && (!/^[a-zA-Z0-9_./~^@{}-]+$/.test(revision) || revision.startsWith('-'))) throw new Error('Invalid revision.');
+export function gitArguments(operation, revision, filePath) {
+  if (!['status', 'diff', 'log', 'show', 'blame', 'stat'].includes(operation)) throw new Error('Unsupported Git operation.');
+  const hasRevision = revision !== undefined && revision !== null && revision !== '';
+  if (hasRevision && (typeof revision !== 'string' || !/^[a-zA-Z0-9_./~^@{}-]+$/.test(revision) || revision.startsWith('-'))) throw new Error('Invalid revision.');
+  const rev = hasRevision ? revision : 'HEAD';
   const args = ['--no-pager', '-c', 'core.fsmonitor=false', '-c', 'core.quotePath=false'];
-  if (operation === 'status') return [...args, 'status', '--short', '--untracked-files=normal'];
-  if (operation === 'log') return [...args, 'log', '-12', '--oneline', revision || 'HEAD', '--'];
-  return [...args, operation, '--no-ext-diff', '--no-textconv', '--no-color', revision || 'HEAD', '--'];
+  if (operation === 'status') {
+    if (hasRevision) throw new Error('status takes no revision.');
+    if (filePath !== undefined) throw new Error('status takes no file path.');
+    return [...args, 'status', '--short', '--untracked-files=normal'];
+  }
+  if (operation !== 'blame' && filePath !== undefined) throw new Error('This operation takes no file path.');
+  if (operation === 'log') return [...args, 'log', '-12', '--oneline', rev, '--'];
+  // `stat` is a read-only diff summary (who/how-big questions without bash).
+  if (operation === 'stat') return [...args, 'diff', '--stat', '--no-ext-diff', '--no-textconv', '--no-color', rev, '--'];
+  // `blame` answers "who last touched this" without a shell; it needs a file.
+  // --no-textconv/--no-ext-diff keep repo .gitattributes/config from invoking
+  // external helpers; -- always separates the file path from options.
+  if (operation === 'blame') {
+    if (filePath === undefined || filePath === null || filePath === '') throw new Error('blame requires a file path.');
+    if (!isSafeGitPath(filePath)) throw new Error('Invalid file path.');
+    return [...args, 'blame', '--no-ext-diff', '--no-textconv', '--no-color-lines', '--no-color-by-age', rev, '--', filePath.replace(/\\/g, '/')];
+  }
+  return [...args, operation, '--no-ext-diff', '--no-textconv', '--no-color', rev, '--'];
+}
+
+/** Relative repo paths only: no escapes, no option injection, no NUL.
+ * Backslashes normalize to forward slashes; dotfiles, spaces and Unicode
+ * names are allowed. Rejects absolute/drive paths, `.`/`..` segments,
+ * empty segments and leading `-` (option injection). */
+export function isSafeGitPath(filePath) {
+  if (typeof filePath !== 'string' || !filePath || filePath.length > 512) return false;
+  if (filePath.includes('\0')) return false;
+  const normalized = filePath.replace(/\\/g, '/');
+  if (normalized.startsWith('-') || normalized.startsWith('/')) return false;
+  if (/^[a-zA-Z]:/.test(normalized)) return false;
+  const parts = normalized.split('/');
+  if (parts.some(part => part === '' || part === '.' || part === '..')) return false;
+  return true;
 }

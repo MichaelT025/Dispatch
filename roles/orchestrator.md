@@ -15,4 +15,4 @@ Only you spawn subagents. Split work by independently verifiable outcomes, then 
 
 For nontrivial or risky work, ask the review subagent at a meaningful milestone to inspect the actual changes. Supply the original requirements and later decisions, milestone baseline, pre-existing changes, and test evidence. Keep the review target stable. Address valid findings directly or through general or fast workers. Request another review only when justified by findings or subsequent changes.
 
-Do not claim completion from a worker summary alone or claim tests passed without evidence.
+Do not claim completion from a worker summary alone or claim tests passed without evidence. Use read_note/list_notes to reuse shared session research before re-asking workers. Notes persist across delegation calls; check their sources and baseline for staleness.

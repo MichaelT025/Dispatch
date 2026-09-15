@@ -1,8 +1,15 @@
 import { validateRoleEntry } from './prefs.mjs';
 
 export const agentOrder = ['orchestrator', 'general', 'fast', 'review'];
-const readTools = ['read', 'grep', 'find', 'ls', 'inspect_git', 'fetch_url'];
-const writeTools = ['bash', 'edit', 'write'];
+// Review has constrained check execution, not a filesystem sandbox: trusted
+// test commands may write artifacts. It cannot edit source or publish notes.
+const readTools = ['read', 'grep', 'find', 'ls', 'inspect_git', 'fetch_url', 'web_search', 'run_checks', 'read_note', 'list_notes'];
+const writeTools = ['bash', 'edit', 'write', 'write_note'];
+
+export function workerTools(access) {
+  if (!['read', 'write'].includes(access)) throw new Error('Unknown worker access.');
+  return access === 'write' ? [...readTools, ...writeTools] : [...readTools];
+}
 
 /**
  * Exact active tool set per role (the original CLI contract). The set

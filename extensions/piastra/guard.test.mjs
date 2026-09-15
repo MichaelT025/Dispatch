@@ -2,7 +2,9 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { ModelRuntime } from '@earendil-works/pi-coding-agent';
+import { AgentSession, ModelRuntime } from '@earendil-works/pi-coding-agent';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import {
   ACTIVE_WORKER_STATUSES,
   PIASTRA_WORKER_GUARD_CHANNEL,
@@ -213,6 +215,51 @@ test('finalizeOutstandingWorkers retires only starting and running records', () 
   assert.deepEqual(cancelled.map((worker) => worker.status), ['cancelled', 'cancelled']);
 });
 
+test('successful delegation returns worker results, transcripts and shared parent notes across batches', async t => {
+  const dir = await mkdtemp(join(tmpdir(), 'piastra-delegate-success-'));
+  const originalDir = process.env.PI_CODING_AGENT_DIR;
+  process.env.PI_CODING_AGENT_DIR = dir;
+  t.after(async () => {
+    if (originalDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = originalDir;
+    await rm(dir, { recursive: true, force: true });
+  });
+  const models = await ModelRuntime.create({ authPath: join(dir, 'auth.json'), modelsPath: join(dir, 'models.json'),
+    modelsStorePath: join(dir, 'models-store.json'), allowModelNetwork: false });
+  const dummyModel = { id: 'offline', name: 'Offline', provider: 'test', api: 'openai-completions', baseUrl: 'http://unused.invalid',
+    reasoning: false, input: ['text'], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 8192, maxTokens: 1024 };
+  models.getModel = () => dummyModel;
+  t.mock.method(ModelRuntime, 'create', async () => models);
+  const prompts = [];
+  // Use real SDK construction and permissions, replacing only the paid model
+  // interaction. This exercises the successful delegate return/cleanup path.
+  t.mock.method(AgentSession.prototype, 'prompt', async function (prompt) {
+    prompts.push(prompt);
+    this.agent.state.messages.push({ role: 'assistant', content: [{ type: 'text', text: 'Verified worker result' }], stopReason: 'stop' });
+  });
+  const extension = await import(pathToFileURL(join(root, 'extensions', 'piastra', 'index.ts')).href);
+  const events = fakeEvents();
+  const pi = fakePi(events);
+  extension.default(pi);
+  const delegate = pi.tools.find(tool => tool.name === 'delegate');
+  const ctx = { cwd: root, sessionManager: { getSessionId: () => 'parent-success' }, isProjectTrusted: () => true, ui: { notify() {} } };
+  for (const callId of ['first-batch', 'later-batch']) {
+    const output = await delegate.execute(callId, { tasks: [{ role: 'fast', access: 'read', task: 'Inspect the assigned files' }] }, undefined, undefined, ctx);
+    assert.match(output.content[0].text, /Shared session notes:/);
+    assert.match(output.content[0].text, /Verified worker result/);
+    assert.equal(output.details.results[0].ok, true);
+    assert.equal(output.details.workers[0].status, 'completed');
+    assert.ok(output.details.results[0].transcript);
+    assert.equal(output.details.notesDir, join(dir, 'piastra', 'runs', 'parent-success', 'notes'));
+    const query = { type: 'query', busy: false, active: 0 };
+    events.emit(PIASTRA_WORKER_GUARD_CHANNEL, query);
+    assert.equal(query.active, 0);
+  }
+  assert.equal(prompts.length, 2);
+  for (const prompt of prompts) assert.match(prompt, /parent-success/);
+  for (const handler of pi.handlers.get('session_shutdown') || []) await handler({}, ctx);
+});
+
 test('a rejected worker runtime initialization finalizes records and releases the guard', async () => {
   const extension = await import(pathToFileURL(join(root, 'extensions', 'piastra', 'index.ts')).href);
   const events = fakeEvents();
@@ -235,7 +282,7 @@ test('a rejected worker runtime initialization finalizes records and releases th
           { role: 'general', access: 'write', task: 'Edit a file' },
           { role: 'fast', access: 'read', task: 'Inspect a file' },
         ],
-      }, undefined, undefined, { cwd: root, ui: { notify: () => {} } }),
+      }, undefined, undefined, { cwd: root, sessionManager: { getSessionId: () => 'guard-init' }, isProjectTrusted: () => true, ui: { notify: () => {} } }),
       /synthetic runtime initialization failure/,
     );
   } finally {
@@ -269,7 +316,7 @@ test('a cancelled worker batch finalizes starting records so the guard releases'
   await assert.rejects(
     delegate.execute('call-cancel', {
       tasks: [{ role: 'fast', access: 'read', task: 'Inspect a file' }],
-    }, controller.signal, undefined, { cwd: root, ui: { notify: () => {} } }),
+    }, controller.signal, undefined, { cwd: root, sessionManager: { getSessionId: () => 'guard-cancel' }, isProjectTrusted: () => true, ui: { notify: () => {} } }),
     (error) => error?.name === 'AbortError',
   );
 
