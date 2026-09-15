@@ -242,7 +242,7 @@ Shared session notes: use list_notes/read_note to reuse earlier findings. ${task
             try { session?.dispose(); } catch { /* teardown must not reject the batch */ }
           }
         }));
-        return result(`Shared notes batch: ${batch} (read with read_note/list_notes).\n\n` + completed.map(r => `${r.role} · ${r.model} · ${r.ok ? 'completed' : 'FAILED'}\n${r.text}\nTranscript: ${r.transcript || '(none)'}`).join('\n\n'), { results: completed, workers, notesDir: notes.dir });
+        return result(`Shared session notes: ${notes.dir} (read with read_note/list_notes).\n\n` + completed.map(r => `${r.role} · ${r.model} · ${r.ok ? 'completed' : 'FAILED'}\n${r.text}\nTranscript: ${r.transcript || '(none)'}`).join('\n\n'), { results: completed, workers, notesDir: notes.dir });
       } catch (error: any) {
         // `settleWorkerBatch` only throws after every worker promise settled, so
         // no sibling is still running when the batch is finalized and the guard
