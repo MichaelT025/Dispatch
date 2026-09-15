@@ -120,7 +120,7 @@ export default function (pi: ExtensionAPI) {
   // hard-blocked here, not merely hidden in the settings panel.
   pi.on('tool_call', async event => {
     if ((UPSTREAM_DELEGATION_TOOLS as readonly string[]).includes(event.toolName)) {
-      return { block: true, reason: `PiAstra single delegation policy: use the delegate tool instead of ${event.toolName}.` };
+      return { block: true, reason: `Dispatch single delegation policy: use the delegate tool instead of ${event.toolName}.` };
     }
   });
   const attempt = async (work: () => Promise<void>, ctx: any) => {
@@ -147,10 +147,10 @@ export default function (pi: ExtensionAPI) {
     else if (!ctx.hasUI) ctx.ui.notify(`Active: ${agents.active}. Use /agent ${agentOrder.join('|')}`, 'info');
   };
   pi.registerCommand('agent', {
-    description: 'Select PiAstra agent: orchestrator, general, fast, review',
+    description: 'Select Dispatch agent: orchestrator, general, fast, review',
     handler: async (args, ctx) => pickAgent(args, ctx)
   });
-  pi.registerShortcut('ctrl+shift+a', { description: 'Cycle PiAstra agent', handler: async ctx => attempt(() => agents.cycle(ctx), ctx) });
+  pi.registerShortcut('ctrl+shift+a', { description: 'Cycle Dispatch agent', handler: async ctx => attempt(() => agents.cycle(ctx), ctx) });
   // Editor-scoped shortcuts (docs/shortcuts.md): Shift+Tab cycles agents,
   // Ctrl+T cycles thinking level, Ctrl+X arms a short leader where
   // t toggles thinking, y copies the last message, a opens this picker and
@@ -164,21 +164,28 @@ export default function (pi: ExtensionAPI) {
     const instructions = agents.active === 'orchestrator'
       ? 'Use delegate for bounded tasks. Choose as many concurrent workers as the task needs, including editing workers. Coordinate file ownership and dependencies to avoid conflicting edits; there is no worker-count cap or batch queue. Workers receive only the task you supply, plus project instructions, never the parent conversation. Include requirements, useful paths, and the exact milestone Git baseline for reviews. Keep a review target stable while it is inspected. Worker read access excludes shell, write and edit; it includes inspect_git, fetch_url, web_search, run_checks and note reading (read_note, list_notes). Run checks yourself, use run_checks-capable review workers for evidence, or use a write-capable worker. Full worker transcripts are saved outside the project. Do not read them unless the concise result is insufficient.'
       : 'You are the directly selected main agent, working with the user in this conversation. Treat the current user request as your task. Answer the user directly; do not wait for an orchestrator or delegate to other agents. Earlier conversation may come from other roles; follow your current role and tool permissions.';
-    return { systemPrompt: `${event.systemPrompt}\n\nActive PiAstra agent: ${agents.active}\n${rolePrompt(agents.active)}\n${instructions}` };
+    return { systemPrompt: `${event.systemPrompt}\n\nActive Dispatch agent: ${agents.active}\n${rolePrompt(agents.active)}\n${instructions}` };
+  });
+  // Canonical /dispatch command with the retained /piastra legacy alias.
+  // Both names share this single handler; no divergent implementation.
+  const showRoles = async (_args: string, ctx: any) => {
+    const summary = agentOrder.map(name => { const value = agents.selection(name); return `${name}: ${value.model}${value.thinking ? ` (${value.thinking})` : ''}`; }).join('\n');
+    ctx.ui.notify(`Active: ${agents.active}\n${summary}\nCWD: ${ctx.cwd}\n/agent selects; Ctrl+Shift+A cycles.\nShortcuts: Shift+Tab cycles agents · Ctrl+T thinking · Ctrl+X then t/y/a/w/m.\nDelegate: uncapped parallel workers; live subagents above the editor; /workers opens details.`, 'info');
+  };
+  pi.registerCommand('dispatch', {
+    description: 'Show Dispatch roles and delegation availability',
+    handler: showRoles
   });
   pi.registerCommand('piastra', {
-    description: 'Show PiAstra roles and delegation availability',
-    handler: async (_args, ctx) => {
-      const summary = agentOrder.map(name => { const value = agents.selection(name); return `${name}: ${value.model}${value.thinking ? ` (${value.thinking})` : ''}`; }).join('\n');
-      ctx.ui.notify(`Active: ${agents.active}\n${summary}\nCWD: ${ctx.cwd}\n/agent selects; Ctrl+Shift+A cycles.\nShortcuts: Shift+Tab cycles agents · Ctrl+T thinking · Ctrl+X then t/y/a/w/m.\nDelegate: uncapped parallel workers; live subagents above the editor; /workers opens details.`, 'info');
-    }
+    description: 'Show Dispatch roles and delegation availability',
+    handler: showRoles
   });
   pi.registerTool({
-    name: 'delegate', label: 'PiAstra workers',
+    name: 'delegate', label: 'Dispatch workers',
     description: 'Delegate bounded tasks to isolated workers. general=implementation/debugging; fast=docs/research/precise edits; review=independent Git review. Each role uses its current session model and reasoning selection. Include all relevant requirements; workers do not see this conversation. All supplied tasks run concurrently with no worker-count cap, including writers. Assign nonconflicting file ownership and order dependencies yourself. Returns concise results and transcript paths. No nested delegation.',
     parameters: Type.Object({ tasks: Type.Array(Type.Object({ role: Type.Union([Type.Literal('general'), Type.Literal('fast'), Type.Literal('review')]), access: Type.Union([Type.Literal('read'), Type.Literal('write')]), task: Type.String() }), { minItems: 1 }) }),
     renderCall(args, theme, context) {
-      const pending = new Text(theme.fg('toolTitle', `PiAstra · ${args.tasks?.length || 0} workers in parallel`), 0, 0);
+      const pending = new Text(theme.fg('toolTitle', `Dispatch · ${args.tasks?.length || 0} workers in parallel`), 0, 0);
       // Pi constructs the call component before the result component. Check
       // their shared per-call state at render time to hide the redundant
       // heading on the very first partial result, not one repaint later.

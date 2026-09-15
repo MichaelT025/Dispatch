@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync } from 'node:fs';
-import { mkdir, mkdtemp, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -10,7 +10,7 @@ import { forkArtifactErrors } from '../../scripts/start-fork.mjs';
 // tests/integration/fork-runtime.test.mjs lives two levels below the repo root.
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const defaultForkRoot = join(root, '..', 'PiAstra-web-ui');
-const forkRoot = resolve(process.env.PIASTRA_FORK_DIR || defaultForkRoot);
+const forkRoot = resolve(process.env.DISPATCH_FORK_DIR || process.env.PIASTRA_FORK_DIR || defaultForkRoot);
 const sdkEntry = join(forkRoot, 'node_modules', '@earendil-works', 'pi-coding-agent', 'dist', 'index.js');
 
 /**
@@ -28,12 +28,12 @@ function assertForkReady() {
   ];
   if (missing.length === 0) return;
   assert.fail(
-    'Fork integration test cannot run: the sibling PiAstra fork checkout is not built.\n' +
+    'Fork integration test cannot run: the sibling Dispatch Web checkout is not built.\n' +
     `Fork root: ${forkRoot}\n` +
     `Missing: ${missing.join(', ')}\n` +
     'Set up and build the fork checkout, then re-run `npm run test:integration`:\n' +
     `  cd ${forkRoot} && npm ci && npm run build\n` +
-    `(Override the checkout location with PIASTRA_FORK_DIR; default: ${defaultForkRoot})\n`,
+    `(Override the checkout location with DISPATCH_FORK_DIR (legacy PIASTRA_FORK_DIR); default: ${defaultForkRoot})\n`,
   );
 }
 
@@ -62,27 +62,45 @@ async function makeSyntheticAgentDir() {
   return agentDir;
 }
 
-test('fork SDK sessions load the PiAstra extension with only the delegate tool as delegation', async () => {
+test('fork SDK sessions load Dispatch with canonical and legacy commands and only delegate as delegation', async () => {
   assertForkReady();
   const agentDir = await makeSyntheticAgentDir();
-  const sdk = await import(pathToFileURL(sdkEntry).href);
-  const services = await sdk.createAgentSessionServices({ cwd: root, agentDir });
-  const extensionErrors = services.resourceLoader.getExtensions().errors;
-  assert.deepEqual(extensionErrors, []);
-  const { session } = await sdk.createAgentSessionFromServices({
-    services,
-    sessionManager: sdk.SessionManager.inMemory(root), // in-memory: no session files written
-  });
-  assert.deepEqual(session.getActiveToolNames().filter(name =>
-    ['subagent_spawn', 'subagent_get_result', 'subagent_steer', 'subagent_list', 'subagent_stop', 'subagent_wait_all', 'subagent_templates', 'delegate_task'].includes(name)), []);
-  // The extension only exposes `delegate` after bindExtensions fires session_start
-  // (the fork server binds every session in rpc mode the same way).
-  await session.bindExtensions({ mode: 'rpc' });
-  const active = session.getActiveToolNames();
-  assert.ok(active.includes('delegate'), `delegate should be active, got: ${active.join(', ')}`);
-  assert.ok(!active.some(name => name.startsWith('subagent_')));
-  // Role switching via the /agent command (no model request; only setModel).
-  await session.prompt('/agent general');
-  assert.equal(session.model?.id, 'glm-5.3-flash');
-  session.dispose();
+  // Extension getAgentDir() resolves the environment, not the services option.
+  // Set both before loading the SDK so real user preferences are never read.
+  const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+  process.env.PI_CODING_AGENT_DIR = agentDir;
+  let session;
+  try {
+    const sdk = await import(pathToFileURL(sdkEntry).href);
+    const services = await sdk.createAgentSessionServices({ cwd: root, agentDir });
+    const extensionErrors = services.resourceLoader.getExtensions().errors;
+    assert.deepEqual(extensionErrors, []);
+    const extensions = services.resourceLoader.getExtensions().extensions;
+    const commands = extensions.flatMap(extension => [...extension.commands.keys()]);
+    assert.ok(commands.includes('dispatch'), 'canonical summary command is loaded');
+    assert.ok(commands.includes('piastra'), 'legacy summary command is loaded');
+    ({ session } = await sdk.createAgentSessionFromServices({
+      services,
+      sessionManager: sdk.SessionManager.inMemory(root), // no session files written
+    }));
+    assert.deepEqual(session.getActiveToolNames().filter(name =>
+      ['subagent_spawn', 'subagent_get_result', 'subagent_steer', 'subagent_list', 'subagent_stop', 'subagent_wait_all', 'subagent_templates', 'delegate_task'].includes(name)), []);
+    // The fork server binds every session in rpc mode the same way.
+    await session.bindExtensions({ mode: 'rpc' });
+    const active = session.getActiveToolNames();
+    assert.ok(active.includes('delegate'), `delegate should be active, got: ${active.join(', ')}`);
+    assert.ok(!active.some(name => name.startsWith('subagent_')));
+    // Commands are verified above before invoking: never send an unknown slash
+    // command as a prompt. These commands make no model requests.
+    await session.prompt('/dispatch');
+    await session.prompt('/piastra');
+    await session.prompt('/agent general');
+    assert.equal(session.model?.id, 'glm-5.3-flash');
+  } finally {
+    try { session?.dispose(); } finally {
+      if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+      else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+      await rm(dirname(agentDir), { recursive: true, force: true });
+    }
+  }
 });

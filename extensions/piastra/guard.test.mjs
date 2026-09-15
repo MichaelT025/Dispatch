@@ -94,8 +94,8 @@ test('registerWorkerGuard answers the synchronous query and stops after dispose'
 });
 
 test('workerGuardMessage describes the block clearly', () => {
-  assert.match(workerGuardMessage(1), /^1 PiAstra worker is still running/);
-  assert.match(workerGuardMessage(2), /^2 PiAstra workers are still running/);
+  assert.match(workerGuardMessage(1), /^1 Dispatch worker is still running/);
+  assert.match(workerGuardMessage(2), /^2 Dispatch workers are still running/);
 });
 
 test('createSessionPhaseGuard tracks compaction and branch-summary lifecycles', () => {

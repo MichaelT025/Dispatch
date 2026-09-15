@@ -7,26 +7,28 @@ import { FORK_DISABLED_AGENT_TOOLS } from '../extensions/piastra/policy.mjs';
 /**
  * Fork UI launcher (experimental; see docs/FORK_PLAN.md).
  *
- * Runs the PiAstra fork of pi-web-ui (sibling checkout) from its built
+ * Runs the Dispatch fork of pi-web-ui (sibling checkout) from its built
  * artifacts: `<fork>/dist/server/index.js` serves `<fork>/web/dist`.
  *
  * Isolation:
- * - loopback bind, dedicated port (PIASTRA_FORK_PORT, default 8790);
+ * - loopback bind, dedicated port (DISPATCH_FORK_PORT, legacy PIASTRA_FORK_PORT, default 8790);
  * - `.local/fork-agent`: its own settings.json (model defaults plus a
- *   deliberate absolute path reference to this checkout's PiAstra extension);
+ *   deliberate absolute path reference to this checkout's Dispatch extension);
  *   auth/models files are copied ONCE from the existing local credential path
  *   `.local/agent` only when missing — the launcher copies bytes, it never
  *   prints or commits them (the copies stay in ignored `.local/`);
  * - `.local/fork-web`: its own UI state. client-state.json seeds
  *   disabledAgentTools with the upstream inline subagent/delegation tools so
- *   the fork server keeps only the PiAstra `delegate` tool active (the
+ *   the fork server keeps only the Dispatch `delegate` tool active (the
  *   extension additionally hard-blocks them per tool call).
  *
  * Global Pi settings, the user's global extension install and the settings
  * used by `npm start` (`.local/agent`, `.local/web`) are not modified.
  */
 
-export const DEFAULT_FORK_PORT = 8790;
+import { DEFAULT_FORK_PORT, parseForkPortEnv, resolveForkDir } from './env.mjs';
+
+export { DEFAULT_FORK_PORT };
 
 /** Absolute paths the fork must provide before it can run. */
 export function forkArtifactErrors(forkRoot) {
@@ -39,7 +41,7 @@ export function forkArtifactErrors(forkRoot) {
 }
 
 export function resolveForkRoot(root, env = process.env) {
-  const forkRoot = resolve(env.PIASTRA_FORK_DIR || join(root, '..', 'PiAstra-web-ui'));
+  const forkRoot = resolveForkDir(root, env);
   const missing = forkArtifactErrors(forkRoot);
   if (missing.length) {
     throw new Error(
@@ -63,7 +65,7 @@ export function seedForkAgentDir(root, agentDir) {
   const orchestrator = config.orchestrator;
   const slash = orchestrator.model.indexOf('/');
   const extensionPath = join(root, 'extensions', 'piastra', 'index.ts');
-  if (!existsSync(extensionPath)) throw new Error(`PiAstra extension missing: ${extensionPath}`);
+  if (!existsSync(extensionPath)) throw new Error(`Dispatch extension missing: ${extensionPath}`);
   const seeded = seedOnce(join(agentDir, 'settings.json'), () => {
     writeFileSync(join(agentDir, 'settings.json'), JSON.stringify({
       defaultProvider: orchestrator.model.slice(0, slash),
@@ -91,7 +93,7 @@ export async function seedForkDataDir(root, dataDir, forkRoot) {
     writeFileSync(join(dataDir, 'client-state.json'), JSON.stringify({
       __settings__: {
         settings: {
-          customSystemPrompt: 'PiAstra fork session. Delegation runs through the delegate tool; upstream subagent tools are intentionally disabled.',
+          customSystemPrompt: 'Dispatch fork session. Delegation runs through the delegate tool; upstream subagent tools are intentionally disabled.',
           promptMode: 'append',
           goalModeEnabled: false,
           visionBridgeEnabled: false,
@@ -118,7 +120,7 @@ export async function seedForkDataDir(root, dataDir, forkRoot) {
       const selected = JSON.parse(readFileSync(join(root, 'config', 'agents.json'), 'utf8'))[name];
       return {
         name,
-        description: `PiAstra ${name} (fork UI; delegation currently goes through the delegate tool)`,
+        description: `Dispatch ${name} (fork UI; delegation currently goes through the delegate tool)`,
         promptMode: 'append',
         systemPrompt: readFileSync(join(root, 'roles', `${name}.md`), 'utf8'),
         enabledSkills: [],
@@ -133,9 +135,7 @@ export async function seedForkDataDir(root, dataDir, forkRoot) {
 }
 
 export function parseForkPort(env = process.env) {
-  const port = Number(env.PIASTRA_FORK_PORT || DEFAULT_FORK_PORT);
-  if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('Invalid PIASTRA_FORK_PORT.');
-  return port;
+  return parseForkPortEnv(env);
 }
 
 async function main() {

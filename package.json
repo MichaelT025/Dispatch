@@ -1,9 +1,9 @@
 {
-  "name": "piastra",
+  "name": "@michaelt025/dispatch",
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Lightweight Pi orchestration with Astra planning and milestone review",
+  "description": "Dispatch — Pi orchestration with Astra planning and milestone review",
   "engines": {
     "node": ">=22.19.0"
   },

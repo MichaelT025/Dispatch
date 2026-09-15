@@ -3,14 +3,15 @@ import { existsSync, statSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { parseMainPort } from './env.mjs';
+
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const workspace = resolve(process.argv[2] || root);
 if (!existsSync(join(root, '.local', 'agent', 'settings.json'))) {
-  throw new Error('Run npm run setup before starting PiAstra.');
+  throw new Error('Run npm run setup before starting Dispatch.');
 }
 if (!statSync(workspace).isDirectory()) throw new Error('Workspace must be a directory.');
-const port = Number(process.env.PIASTRA_PORT || 8787);
-if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('Invalid PIASTRA_PORT.');
+const port = parseMainPort(process.env);;
 
 const child = spawn(process.execPath, [
   join(root, 'node_modules', 'pi-web-ui', 'bin', 'pi-web-ui.mjs'),

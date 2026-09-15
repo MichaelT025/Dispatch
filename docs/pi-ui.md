@@ -14,7 +14,7 @@ pi install npm:@juicesharp/rpiv-todo@2.9.0
 npm run install:cli
 ```
 
-PiAstra publishes the `piastra:workers` panel through Atelier's public sidebar event protocol. It shows active workers first and recent completed workers, with their task, model, and activity. It reuses delegation updates, emits only changed panel data, and introduces no polling timer. Without Atelier, the ordinary `/workers` viewer still works.
+Dispatch publishes the `piastra:workers` panel through Atelier's public sidebar event protocol. It shows active workers first and recent completed workers, with their task, model, and activity. It reuses delegation updates, emits only changed panel data, and introduces no polling timer. Without Atelier, the ordinary `/workers` viewer still works.
 
 Atelier hides contributed panels until enabled. In `/atelier display`, enable `piastra:workers` and position it near TODOs. Alternatively, merge the following into `~/.pi/agent/pi-atelier.json`:
 
@@ -40,7 +40,7 @@ Atelier hides contributed panels until enabled. In `/atelier display`, enable `p
 
 Restart Pi or run `/reload` after installing. Use `/atelier` or Alt+A for controls, `/atelier sidebar` to toggle the sidebar, and Ctrl+Shift+R to resize it. The sidebar automatically hides in narrow terminals. Pi fullscreen mode (`pi --tui-mode fullscreen`) keeps transcript selection separate from sidebar text; ordinary terminal selection in regular mode can include sidebar columns.
 
-Ask the agent to “Track this task with todos,” and use `/todos` to inspect the planner. The optional `todo` tool remains available after PiAstra role switches. Other plugins' tools are not automatically admitted into role allowlists. Delegated workers retain their isolated tool sets; the parent owns the task plan.
+Ask the agent to “Track this task with todos,” and use `/todos` to inspect the planner. The optional `todo` tool remains available after Dispatch role switches. Other plugins' tools are not automatically admitted into role allowlists. Delegated workers retain their isolated tool sets; the parent owns the task plan.
 
 ## Subagents above-editor panel
 
@@ -48,11 +48,11 @@ While orchestrator workers run, a **Subagents** panel sits above the editor in t
 
 The main-chat delegation result stays a single aggregate line (`Workers · … · /workers for details`), even with **Ctrl+O**; full worker conversations and model outputs remain in `/workers`.
 
-## PiAstra-maintained Atelier fork (opt-in)
+## Dispatch-maintained Atelier fork (opt-in)
 
 `extensions/pi-atelier/` is based on the published **pi-atelier 0.10.1**
 release with its MIT license and recorded npm integrity hashes. The fork now
-adds editor cooperation so PiAstra shortcuts and Atelier's frame work together. See
+adds editor cooperation so Dispatch shortcuts and Atelier's frame work together. See
 [the fork notes](../extensions/pi-atelier/FORK.md) and
 [provenance](../extensions/pi-atelier/UPSTREAM.md). This is an in-repository fork,
 not a separately published package or remote GitHub fork.
@@ -63,7 +63,7 @@ To switch to the managed copy:
 npm run install:cli -- --atelier
 ```
 
-The installer backs up settings, copies the fork into the standalone PiAstra
+The installer backs up settings, copies the fork into the standalone Dispatch
 installation, and disables the upstream `npm:pi-atelier` extension while keeping
 its package and your `pi-atelier.json`. Restart Pi or run `/reload`. Subsequent
 `npm run install:cli` runs update the managed fork without needing the flag again.
@@ -71,9 +71,9 @@ Without an initial opt-in, the installer leaves upstream Atelier alone.
 If you installed Atelier from Git or a separate extension path instead of npm,
 disable that registration yourself before enabling the fork to avoid duplicates.
 
-`/atelier`, sidebar panel IDs and configuration remain compatible. PiAstra owns
+`/atelier`, sidebar panel IDs and configuration remain compatible. Dispatch owns
 the input editor while Atelier supplies its rounded frame; both startup orders
-work. `/atelier disable` removes the frame without disabling PiAstra shortcuts,
+work. `/atelier disable` removes the frame without disabling Dispatch shortcuts,
 and `/atelier enable` restores it without nesting editors. Unknown custom
 editors are left untouched. See [shortcut cooperation](shortcuts.md).
 
@@ -82,10 +82,10 @@ whether it originates in Pi's terminal renderer. Automated editor/lifecycle
 checks do not constitute live terminal or scrolling verification.
 
 The managed fork includes the earlier agent-name customization: the activity
-label below the editor shows the active PiAstra role instead of READY/WORKING,
+label below the editor shows the active Dispatch role instead of READY/WORKING,
 with role colors: **orchestrator purple, general yellow, fast light blue, review green**.
 Working animation remains; warning/error colors take precedence. Without
-PiAstra it falls back to Atelier's normal activity label. This was the only
+Dispatch it falls back to Atelier's normal activity label. This was the only
 source modification found when auditing the old npm installation against the
 published 0.10.1 package; your sidebar/layout preferences remain in the existing
 `pi-atelier.json`.
@@ -98,7 +98,7 @@ from `settings.json`, then use `pi config` to re-enable the upstream package's
 extension (or remove its `extensions: []` filter). Restart or `/reload` afterward.
 Your sidebar configuration is preserved.
 
-## PiAstra-maintained pi-todo fork
+## Dispatch-maintained pi-todo fork
 
 `npm run install:cli` automatically migrates an enabled `npm:@juicesharp/rpiv-todo` entry (bare, versioned or ranged, string or object form) to the self-contained `extensions/pi-todo` fork: the upstream package entry is kept but its extension disabled, and the managed index is registered once. Only the original `rpiv-todos` widget and its collapse shortcut are suppressed; the `todo` tool, `/todos`, history and Atelier sidebar TODOs keep working. With no todo package configured, or only disabled entries, the installer leaves todo settings alone; once managed, reruns keep the fork updated. User todo config and history are never written, and nothing changes until the installer runs and Pi restarts or reloads. Todo installs from Git or a local path are not migrated — disable those registrations yourself to avoid duplicates.
 

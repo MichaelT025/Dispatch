@@ -320,4 +320,4 @@ settings.defaultProvider = config.model.slice(0, slash);
 settings.defaultModel = config.model.slice(slash + 1);
 settings.defaultThinkingLevel = config.thinking;
 await writeFile(target, JSON.stringify(settings, null, 2) + '\n');
-console.log(`PiAstra installed in ${target}\nRun pi from any directory. /piastra shows the roles.\nStandalone extension copy: ${installed}\nRe-run this installer to update the installed code and role configuration.${atelierActive ? '\nManaged Atelier fork installed and upstream npm:pi-atelier extension disabled.' : ''}${todoActive ? '\nManaged pi-todo fork installed and upstream npm:@juicesharp/rpiv-todo extension disabled.' : ''}`);
+console.log(`Dispatch installed in ${target}\nRun pi from any directory. /dispatch shows the roles.\nStandalone extension copy: ${installed}\nRe-run this installer to update the installed code and role configuration.${atelierActive ? '\nManaged Atelier fork installed and upstream npm:pi-atelier extension disabled.' : ''}${todoActive ? '\nManaged pi-todo fork installed and upstream npm:@juicesharp/rpiv-todo extension disabled.' : ''}`);

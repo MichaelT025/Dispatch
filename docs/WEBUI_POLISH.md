@@ -1,5 +1,7 @@
 # Web UI polish milestone
 
+> Historical note (2026-09-15): milestone record for the Dispatch Web (formerly PiAstra) redesign branch. Commit hashes below are history, not the current baseline.
+
 Source checkout: `C:\Users\micha\Documents\Projects\Personal\PiAstra-web-ui`, branch `piastra-redesign`.
 Starting commit: `fe859057f991861780c87b051113f2a6766b7e1e`. Current milestone: `503c3a4`.
 Original visual targets remain `reference/codex.png` and `reference/codex_empty_sidebar.png`.
@@ -38,7 +40,7 @@ This streams terminals started by the application. It does not attach to arbitra
 
 Generated `reference/astra-polish-*.png` images show test projects and agent presentation, not real model conversations. Existing `astra-*.png` shell captures were refreshed.
 
-Run from PiAstra: `npm run start:fork`, then open http://127.0.0.1:8790. Restart an already-running fork server and refresh its browser tab after this update (protocol version 16).
+Run from Dispatch: `npm run start:fork`, then open http://127.0.0.1:8790. Restart an already-running fork server and refresh its browser tab after this update (protocol version 16).
 
 ## Remaining validation
 

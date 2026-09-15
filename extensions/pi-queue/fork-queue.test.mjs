@@ -15,7 +15,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { forkArtifactErrors } from '../../scripts/start-fork.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
-const forkRoot = resolve(process.env.PIASTRA_FORK_DIR || join(root, '..', 'PiAstra-web-ui'));
+const forkRoot = resolve(process.env.DISPATCH_FORK_DIR || process.env.PIASTRA_FORK_DIR || join(root, '..', 'PiAstra-web-ui'));
 const sdkEntry = join(forkRoot, 'node_modules', '@earendil-works', 'pi-coding-agent', 'dist', 'index.js');
 const ready = existsSync(sdkEntry) && forkArtifactErrors(forkRoot).length === 0;
 

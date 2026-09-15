@@ -425,7 +425,7 @@ export function installShortcuts(pi: ExtensionAPI, actions: PiastraShortcutActio
         return undefined;
       };
       const factory = ((tui: any, theme: any, keybindings: any) => {
-        if (generation !== currentGeneration) throw new Error('PiAstra editor factory belongs to a retired session');
+        if (generation !== currentGeneration) throw new Error('Dispatch editor factory belongs to a retired session');
         disarmActive();
         const editor = new PiastraEditor(tui, theme, keybindings, {
           ctx,
@@ -492,7 +492,7 @@ export function installShortcuts(pi: ExtensionAPI, actions: PiastraShortcutActio
       const canCompose = isOwn || recognized;
       if (!canCompose) {
         try {
-          ctx.ui.notify('PiAstra editor shortcuts not installed: another extension already provides a custom editor.', 'warning');
+          ctx.ui.notify('Dispatch editor shortcuts not installed: another extension already provides a custom editor.', 'warning');
         } catch { /* ignore */ }
         return;
       }

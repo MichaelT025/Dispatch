@@ -94,7 +94,7 @@ let tempSequence = 0;
  */
 export async function savePrefs(file, role, entry) {
   const valid = validateRoleEntry(entry);
-  if (!valid) throw new Error(`Invalid persisted PiAstra preference for ${role}.`);
+  if (!valid) throw new Error(`Invalid persisted Dispatch preference for ${role}.`);
   return runExclusively(file, () => persistUnderLock(file, role, valid));
 }
 

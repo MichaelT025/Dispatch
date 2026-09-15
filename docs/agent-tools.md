@@ -1,10 +1,10 @@
 # Native agent tools
 
-PiAstra uses the same custom-tool factory for the main agent and delegated workers. No MCP server or skill is required. Role switching replaces tool allowlists; workers receive only their permitted tools.
+Dispatch uses the same custom-tool factory for the main agent and delegated workers. No MCP server or skill is required. Role switching replaces tool allowlists; workers receive only their permitted tools.
 
 ## Web research
 
-- `web_search({query, max_results?})`: Tavily search; 1–10 results (default 5), titles, URLs and snippets. Set `TAVILY_API_KEY` in the environment before launching PiAstra. Without it, search returns a clear configuration error. Queries go to Tavily: do not send secrets. API charges/limits are separate from model subscriptions.
+- `web_search({query, max_results?})`: Tavily search; 1–10 results (default 5), titles, URLs and snippets. Set `TAVILY_API_KEY` in the environment before launching Dispatch. Without it, search returns a clear configuration error. Queries go to Tavily: do not send secrets. API charges/limits are separate from model subscriptions.
 - `fetch_url({url})`: native HTTP(S), HTML-to-text conversion preserving blocks, code and links. Supports text, JSON and XML, not PDF or browser/JavaScript rendering. No key required. Public-IP-only DNS resolution is pinned to the connection; each redirect is revalidated. Private, loopback, link-local and reserved addresses are rejected. There is a 30-second total deadline, five-redirect limit, 2MB response limit and 40,000-character output limit, with explicit truncation notices.
 
 Fetched pages, search results and notes are **untrusted reference material**, never instructions. Network proxies/browser cookies are not used.

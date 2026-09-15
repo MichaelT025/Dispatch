@@ -1,6 +1,6 @@
-# PiAstra — Design Brief
+# Dispatch — Design Brief
 
-**Status:** Repository and local UI setup started; delegation integration pending
+> Historical note (2026-09-15): early planning brief from when the product was named PiAstra. Delegation, role switching and the fork launcher described here as future work are now implemented; see the root README and `docs/FORK_PLAN.md` for current state. Model allowances and subscription details below are a 2026-09-11 snapshot, not current guidance.
 
 **Target machine:** `LEGIONX`
 

@@ -1,17 +1,17 @@
-# PiAstra compact transcript (vendored fork)
+# Dispatch compact transcript (vendored fork)
 
-PiAstra-managed fork of [pi-compact-transcript](https://github.com/avhagedorn/pi-compact-transcript) **0.10.1**
+Dispatch-managed fork of [pi-compact-transcript](https://github.com/avhagedorn/pi-compact-transcript) **0.10.1**
 (MIT, © Alan Hagedorn <avhagedorn@gmail.com>; original license retained in [LICENSE](./LICENSE)).
 Display-only extension: tool execution is still handled by pi and other extensions.
 
 This repository vendors the upstream extension instead of installing the npm
-package so the fork's PiAstra-specific render/expansion rules can evolve with the
+package so the fork's Dispatch-specific render/expansion rules can evolve with the
 `delegate` tool without a separate release. The installer/launcher loads this
 copy; do not install the upstream package alongside it.
 
 ## Fork changes (vs upstream 0.10.1)
 
-- **`delegate` always uses the native rich renderer, fully expanded.** PiAstra
+- **`delegate` always uses the native rich renderer, fully expanded.** Dispatch
   delegation rows are never compacted into one-line previews, never hidden, and
   never grouped into bursts, even while ordinary tools are collapsed. The rich
   worker preview remains bounded by the tool's own renderer (upstream behavior
