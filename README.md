@@ -14,7 +14,7 @@ Dispatch (formerly PiAstra) is a lightweight Pi setup with Astra planning, OpenC
 - Launchers prefer `DISPATCH_PORT`, `DISPATCH_FORK_DIR`, `DISPATCH_FORK_PORT`, `DISPATCH_TRIAL_PORT` and `DISPATCH_TAU_PORT`, with the corresponding `PIASTRA_*` names as fallbacks. Empty values count as unset; invalid preferred values report an error instead of falling back.
 - GitHub repository names and the `../PiAstra-web-ui` sibling path remain unchanged. Dispatch Web retains its `pi-web-ui` executable/service names, `PI_WEB_*` configuration and browser storage keys.
 
-The npm scope `@michaelt025` is confirmed. Packages remain **unpublished/private during development**. The generated `@michaelt025/dispatch` package includes the CLI launcher, explicit setup, all seven maintained extensions, and built Dispatch Web. Pi is pinned to 0.85.1. Update support is the next implementation phase; do not publish yet.
+The npm scope `@michaelt025` is confirmed. Packages remain **unpublished/private during development**. The generated `@michaelt025/dispatch` package includes the CLI launcher, explicit setup, all seven maintained extensions, and built Dispatch Web. Pi is pinned to 0.85.1. Startup update notices and explicit `dispatch update` are implemented. Publication still requires separate approval; do not publish yet.
 
 ## Packaged Dispatch
 
@@ -23,12 +23,15 @@ After installing the generated package, run `dispatch setup` explicitly. It chec
 - `dispatch`: interactive CLI (normal Pi options can follow).
 - `dispatch --web [--port N] [--no-open]`: foreground WebUI, loopback only, default port 8790. `DISPATCH_PORT` changes this launcher's default. Closing the browser does not stop the server; Ctrl+C does.
 - `dispatch --help` / `-h`, `dispatch --version`: available without setup.
+- `dispatch update`: update the same positively identified npm global/local installation to the latest stable release. Close running Dispatch sessions first. Checkout, linked, npx-cache and other package-manager installations get manual guidance rather than an update in the wrong location.
+
+Startup checks are nonblocking and show **“A Dispatch update is available. Run dispatch update.”** Nothing updates silently. `DISPATCH_SKIP_VERSION_CHECK=1` disables only startup checks; explicit updates still work. `DISPATCH_OFFLINE=1` or `PI_OFFLINE=1` disables update network access. Updates retain settings/credentials outside the install tree and verify the installed version before reporting success. Other `DISPATCH_HOME` instances cannot be discovered automatically—close those too.
 
 State lives under `~/.dispatch` (`DISPATCH_HOME` overrides): `agent/` for isolated Pi credentials/settings/sessions, `web/` for browser state. Inherited `PI_CODING_AGENT_DIR` and session-directory overrides do not redirect Dispatch. No credentials are copied from plain Pi. CLI and WebUI share session storage, not a live mirrored conversation. This is configuration separation, not an OS security sandbox.
 
 The legacy installer below is retained for compatibility and still changes the selected Pi configuration. Existing legacy registrations are **not** removed automatically; remove those registrations separately if you previously installed Dispatch into plain Pi and want it unbundled.
 
-Build a local package with `npm run build:release -- --web-dir <maintained-webui-checkout>`, then `npm pack ./.release/package --pack-destination .release`. The WebUI checkout is a **build-time** input only; installed packages do not need it. See [the release contract](docs/RELEASE_PACKAGE.md).
+Build a local package with `npm run build:release -- --web-dir <maintained-webui-checkout>`, then `npm pack ./.release/package --pack-destination .release`. The WebUI checkout is a **build-time** input only; installed packages do not need it. See [the release contract](docs/RELEASE_PACKAGE.md). The artifact ships a focused [user README](docs/RELEASE_README.md), rather than the legacy developer/trial instructions below.
 
 ## Help
 

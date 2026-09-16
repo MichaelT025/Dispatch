@@ -436,7 +436,8 @@ export function buildRelease({ root = DEFAULT_ROOT, webRoot, outDir, buildWeb = 
     if (existsSync(join(r, 'assets'))) {
       copyTreeFiltered(join(r, 'assets'), join(tmp, 'assets'), runtimeFilter(join(r, 'assets')));
     }
-    copyIfExists(join(r, 'README.md'), join(tmp, 'README.md'));
+    const releaseReadme = join(r, 'docs', 'RELEASE_README.md');
+    copyIfExists(existsSync(releaseReadme) ? releaseReadme : join(r, 'README.md'), join(tmp, 'README.md'));
     copyIfExists(join(r, 'THIRD_PARTY_NOTICES.md'), join(tmp, 'THIRD_PARTY_NOTICES.md'));
     copyIfExists(join(r, 'LICENSE'), join(tmp, 'LICENSE'));
     copyIfExists(join(r, 'LICENSE.md'), join(tmp, 'LICENSE.md'));

@@ -49,6 +49,11 @@ export const helpSections = [
       'Dispatch settings live in ~/.dispatch (override: DISPATCH_HOME).',
       'Existing plain Pi settings and credentials are not changed.',
       'dispatch --help (or -h) prints the short terminal overview.',
+      'At launch, Dispatch checks for a newer stable release in the background.',
+      'Close running Dispatch sessions, then run dispatch update to upgrade.',
+      'Updates preserve settings and credentials; nothing installs silently.',
+      'DISPATCH_SKIP_VERSION_CHECK=1 disables startup checks.',
+      'DISPATCH_OFFLINE=1 or PI_OFFLINE=1 disables update network access.',
     ],
   },
   {
@@ -269,6 +274,7 @@ export function formatTerminalHelp() {
     '',
     'Usage: dispatch [Pi options]        Interactive CLI',
     '       dispatch setup               Explicit sign-in and configuration',
+    '       dispatch update              Update this npm installation',
     '       dispatch --web [--port N] [--no-open]',
     '       dispatch --help | -h          This overview',
     '       dispatch --version            Package version',
@@ -290,7 +296,9 @@ export function formatTerminalHelp() {
     '',
     'In the TUI, /dispatch-help [section] opens commands, shortcuts and tips.',
     'Outside the TUI, it shows help through notifications.',
-    'Self-update is not yet available in this development phase.',
+    'Updates: close running Dispatch sessions, then run dispatch update.',
+    'Startup checks never install automatically or block offline launches.',
+    'Opt out: DISPATCH_SKIP_VERSION_CHECK=1; offline: DISPATCH_OFFLINE=1.',
     'Sections: ' + sectionIds().join(', ') + '.',
   ].join('\n');
 }

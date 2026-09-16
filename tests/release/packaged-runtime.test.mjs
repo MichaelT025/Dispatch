@@ -15,10 +15,10 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn, spawnSync, fork } from 'node:child_process';
 import { createRequire } from 'node:module';
-import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { chmod, cp, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, isAbsolute, join, resolve } from 'node:path';
+import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import net from 'node:net';
 
@@ -97,7 +97,7 @@ async function waitFor(fn, { timeoutMs, intervalMs = 150, label }) {
   throw new Error(`${label} (last: ${last?.message || last})`);
 }
 
-test('packaged artifact installs CLI + WebUI without source and shuts down gracefully', { timeout: 240_000 }, async (t) => {
+test('packaged artifact installs CLI + WebUI without source and shuts down gracefully', { timeout: 360_000 }, async (t) => {
   const tarball = tarballPath();
   // Temp root OUTSIDE the repo; everything owned below is removed at the end.
   const tempRoot = await mkdtemp(join(tmpdir(), 'dispatch-packaged-'));
@@ -269,9 +269,17 @@ test('packaged artifact installs CLI + WebUI without source and shuts down grace
 
     const catalog = await request('get_commands');
     const names = (catalog?.commands || []).map((c) => c?.name);
-    for (const required of ['dispatch-help', 'dispatch', 'agent']) {
+    // Full bundle: Dispatch core plus queue, worktree, atelier, and todos.
+    // `wt` is an alias for `worktree`; accept either spelling.
+    assert.ok(names.includes('dispatch-help'), `missing /dispatch-help; got: ${names.join(', ')}`);
+    assert.ok(names.includes('dispatch'), `missing /dispatch; got: ${names.join(', ')}`);
+    for (const required of ['q', 'queue-drain', 'atelier', 'todos']) {
       assert.ok(names.includes(required), `missing /${required}; got: ${names.join(', ')}`);
     }
+    assert.ok(
+      names.includes('wt') || names.includes('worktree'),
+      `missing /wt (or /worktree); got: ${names.join(', ')}`,
+    );
     const state = await request('get_state');
     assert.equal(typeof state?.messageCount, 'number', 'get_state must report messageCount without model calls');
 
@@ -352,5 +360,186 @@ test('packaged artifact installs CLI + WebUI without source and shuts down grace
       }
       throw new Error('port still open');
     }, { timeoutMs: 15_000, label: 'owned port closed after IPC stop' });
+  }
+
+  // 5. Actual local in-place upgrade via the INSTALLED engine
+  //    (lib/updates.mjs imported from the installed prefix, never the
+  //    checkout). Both prior instances are closed (CLI exited 0, Web
+  //    exited 0), so the engine's active-instance guard must pass.
+  //    No published registry, no global writes, no real version lookup:
+  //    lookup is stubbed to a synthetic patch+1 and the adapter swaps
+  //    ONLY the exact PACKAGE@version spec for a locally packed tarball,
+  //    exercising real engine planning/verification + real npm replacement.
+  {
+    const installedUpdates = await import(pathToFileURL(join(pkgRoot, 'lib', 'updates.mjs')).href);
+    assert.equal(installedUpdates.PACKAGE_NAME, '@michaelt025/dispatch');
+
+    // Snapshot user-state bytes BEFORE the upgrade; the engine must not
+    // touch state, settings, credentials, prefs, or web client state.
+    const snapshotFiles = [
+      paths.stateFile,
+      join(paths.agentDir, 'settings.json'),
+      join(paths.agentDir, 'auth.json'),
+      join(paths.agentDir, 'piastra', 'agents.json'),
+      join(paths.webDir, 'client-state.json'),
+    ];
+    const snapshotBytes = new Map();
+    for (const file of snapshotFiles) {
+      try {
+        snapshotBytes.set(file, (await readFile(file)).toString('base64'));
+      } catch (error) {
+        if (error?.code !== 'ENOENT') throw error;
+        snapshotBytes.set(file, null);
+      }
+    }
+
+    // Default detection with ACTUAL npm queries must identify the temp
+    // prefix install as local (engine supports file:.tgz specs).
+    const detection = await installedUpdates.detectNpmInstall({ packageRoot: pkgRoot });
+    assert.equal(detection?.kind, 'local', `expected local detection, got: ${JSON.stringify(detection?.kind)} (${detection?.manual ?? detection?.reason ?? 'no detail'})`);
+    assert.equal(resolve(detection.prefix), resolve(installDir));
+    assert.equal(detection.packagePath, resolve(pkgRoot));
+
+    // Synthetic next version: semver patch+1 of the installed manifest.
+    const parts = manifest.version.split('.').map(Number);
+    assert.equal(parts.length, 3, `installed version is not x.y.z: ${manifest.version}`);
+    assert.ok(parts.every((n) => Number.isInteger(n) && n >= 0), `installed version is not numeric semver: ${manifest.version}`);
+    const nextVersion = `${parts[0]}.${parts[1]}.${parts[2] + 1}`;
+
+    // Second tarball from a COPY of the installed package (excluding
+    // node_modules) with ONLY the root package version bumped. The copy's
+    // private:true and everything else stay unchanged so the upgrade
+    // artifact is a faithful local stand-in for a published release.
+    const upgradeSource = join(tempRoot, 'upgrade-source');
+    // Only skip NESTED dependency directories (relative to pkgRoot); the
+    // pkgRoot path itself legitimately contains node_modules and must be kept.
+    // Only skip NESTED dependency directories (relative to pkgRoot); the
+    // pkgRoot path itself legitimately contains node_modules and must be kept.
+    await cp(pkgRoot, upgradeSource, {
+      recursive: true,
+      filter: (src) => {
+        const rel = relative(pkgRoot, src);
+        if (!rel) return true;
+        return rel.split(/[\/\\]/)[0] !== 'node_modules';
+      },
+    });
+    const upgradeManifestPath = join(upgradeSource, 'package.json');
+    const upgradeManifest = JSON.parse(await readFile(upgradeManifestPath, 'utf8'));
+    assert.equal(upgradeManifest.version, manifest.version);
+    upgradeManifest.version = nextVersion;
+    await writeFile(upgradeManifestPath, `${JSON.stringify(upgradeManifest, null, 2)}\n`);
+    const packRun = spawnLib.sync('npm', ['pack', upgradeSource, '--pack-destination', tempRoot, '--ignore-scripts'], {
+      stdio: 'pipe',
+      encoding: 'utf8',
+      timeout: 120_000,
+    });
+    assert.equal(packRun.status, 0, `npm pack failed:\n${packRun.stdout?.slice(-2000)}\n${packRun.stderr?.slice(-2000)}`);
+    const packedName = String(packRun.stdout ?? '').trim().split('\n').pop().trim();
+    const upgradeTarball = join(tempRoot, packedName);
+    assert.ok(upgradeTarball.endsWith('.tgz') && existsSync(upgradeTarball), `packed upgrade tarball missing: ${upgradeTarball}`);
+
+    const targetSpec = `@michaelt025/dispatch@${nextVersion}`;
+    let adapterCalls = 0;
+    const adapter = async (args, { cwd, timeoutMs } = {}) => {
+      adapterCalls++;
+      assert.ok(args.includes('--prefix'), `engine must pass --prefix, got: ${args.join(' ')}`);
+      assert.ok(args.includes(resolve(installDir)) || args.includes(installDir), `engine must target the installed prefix, got: ${args.join(' ')}`);
+      assert.ok(args.includes('--save-prod'), `local upgrade must use --save-prod, got: ${args.join(' ')}`);
+      assert.ok(args.includes('--global=false'), `local upgrade must disable ambient global mode, got: ${args.join(' ')}`);
+      assert.ok(args.includes(targetSpec), `engine must request exact ${targetSpec}, got: ${args.join(' ')}`);
+      assert.ok(!args.includes('-g') && !args.includes('--global'), `local upgrade must not use a global flag, got: ${args.join(' ')}`);
+      // Replace ONLY the exact spec argument with the local tarball path.
+      const swapped = args.map((a) => (a === targetSpec ? upgradeTarball : a));
+      assert.equal(swapped.filter((a) => a === upgradeTarball).length, 1, 'must swap exactly one spec argument');
+      // Actual npm replacement against the captured local prefix cwd,
+      // scripts enabled (native Web deps require them).
+      const result = spawnLib.sync('npm', swapped, {
+        stdio: 'pipe',
+        encoding: 'utf8',
+        cwd,
+        timeout: 180_000,
+      });
+      return { status: result.status, signal: result.signal ?? null };
+    };
+
+    let updateOutput = '';
+    const updateCode = await installedUpdates.runUpdate({
+      paths,
+      env: { ...process.env, PI_OFFLINE: '0', DISPATCH_OFFLINE: '0', DISPATCH_HOME: paths.home },
+      lookup: async () => ({ version: nextVersion, engines: { node: '>=22.19.0' } }),
+      runChild: adapter,
+      output: { write: (chunk) => { updateOutput += String(chunk); } },
+    });
+    assert.equal(adapterCalls, 1, 'engine must invoke runChild exactly once');
+    assert.equal(updateCode, 0);
+    assert.match(updateOutput, new RegExp(`updated to ${nextVersion.replace(/\./g, '\\.')}`));
+
+    // Default verification already checked the new manifest + binary;
+    // re-assert directly plus byte-identical user state.
+    const newManifest = JSON.parse(await readFile(join(pkgRoot, 'package.json'), 'utf8'));
+    assert.equal(newManifest.version, nextVersion);
+    const newBinRun = spawnSync(process.execPath, [installedBin, '--version'], { encoding: 'utf8', cwd: work });
+    assert.equal(newBinRun.status, 0, `upgraded --version failed: ${newBinRun.stderr?.slice(-1000)}`);
+    assert.equal(newBinRun.stdout.trim(), nextVersion);
+    for (const file of snapshotFiles) {
+      let current;
+      try {
+        current = (await readFile(file)).toString('base64');
+      } catch (error) {
+        if (error?.code !== 'ENOENT') throw error;
+        current = null;
+      }
+      assert.equal(current, snapshotBytes.get(file), `user state changed by upgrade: ${file}`);
+    }
+
+    // Upgraded RPC catalog still serves the full bundle.
+    {
+      const child = track(spawn(process.execPath, [installedBin, '--offline', '--mode', 'rpc', '--no-session'], {
+        cwd: work,
+        env: childEnv,
+        stdio: ['pipe', 'pipe', 'pipe'],
+      }));
+      let stderr = '';
+      child.stderr.on('data', (d) => { stderr += String(d); });
+      child.on('error', () => {});
+      let buffer = '';
+      const pending = new Map();
+      child.stdout.on('data', (chunk) => {
+        buffer += String(chunk);
+        let idx;
+        while ((idx = buffer.indexOf('\n')) >= 0) {
+          const line = buffer.slice(0, idx).trim();
+          buffer = buffer.slice(idx + 1);
+          if (!line) continue;
+          let msg;
+          try { msg = JSON.parse(line); } catch { continue; }
+          if (msg?.type === 'response' && msg?.id !== undefined && pending.has(msg.id)) {
+            const entry = pending.get(msg.id);
+            pending.delete(msg.id);
+            clearTimeout(entry.timer);
+            if (msg.success) entry.resolve(msg.data);
+            else entry.reject(new Error(`rpc ${msg.command} failed: ${msg.error}\nstderr: ${stderr.slice(-2000)}`));
+          }
+        }
+      });
+      const catalog = await new Promise((res, rej) => {
+        const timer = setTimeout(() => rej(new Error(`rpc get_commands timed out\nstderr: ${stderr.slice(-2000)}`)), 30_000);
+        pending.set(1, { resolve: (v) => { clearTimeout(timer); res(v); }, reject: (e) => { clearTimeout(timer); rej(e); }, timer });
+        child.stdin.write(`${JSON.stringify({ id: 1, type: 'get_commands' })}\n`, (err) => {
+          if (err) { clearTimeout(timer); pending.delete(1); rej(err); }
+        });
+      });
+      const names = (catalog?.commands || []).map((c) => c?.name);
+      for (const required of ['dispatch-help', 'dispatch', 'q', 'queue-drain', 'atelier', 'todos']) {
+        assert.ok(names.includes(required), `upgraded catalog missing /${required}; got: ${names.join(', ')}`);
+      }
+      assert.ok(names.includes('wt') || names.includes('worktree'), `upgraded catalog missing /wt; got: ${names.join(', ')}`);
+      const closed = new Promise((resolveClose) => {
+        const timer = setTimeout(() => resolveClose(null), 15_000);
+        child.on('close', (code) => { clearTimeout(timer); resolveClose(code); });
+      });
+      child.stdin.end();
+      assert.equal(await closed, 0, `upgraded CLI stdin.end must exit 0\nstderr: ${stderr.slice(-2000)}`);
+    }
   }
 });

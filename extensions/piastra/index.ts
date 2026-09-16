@@ -50,6 +50,22 @@ export default function (pi: ExtensionAPI) {
   pi.on('session_before_tree', async event => { sessionPhases.beforeTree(event); });
   pi.on('session_tree', async () => { sessionPhases.afterTree(); });
   pi.on('session_start', async () => { sessionPhases.reset(); });
+  // Phase 3 update notice (presentation only): the launcher parent stores the
+  // check promise via setUpdateNoticePromise before Pi/Web load; no network
+  // or timers here. The dynamic import keeps the updater entry unloaded and
+  // lets legacy installed extensions (no ../../lib, no DISPATCH_ACTIVE) skip
+  // silently. Fire-and-forget so startup never blocks on the dialog.
+  let updateNoticeEpoch = 0;
+  pi.on('session_shutdown', async () => { updateNoticeEpoch += 1; });
+  pi.on('session_start', async (_event, ctx) => {
+    updateNoticeEpoch += 1;
+    if (process.env.DISPATCH_ACTIVE !== '1') return;
+    const current = updateNoticeEpoch;
+    void import('../../lib/update-notice.mjs').then(
+      mod => mod.showUpdateNotice(ctx, { isCurrent: () => current === updateNoticeEpoch }),
+      () => {},
+    );
+  });
   pi.on('session_shutdown', async (_event, ctx) => {
     workerGuard.dispose(); sessionPhases.reset(); panel.dispose(); sidebar.dispose(); bridge.dispose();
     // A session left without a single message (a /worktree fresh session the
