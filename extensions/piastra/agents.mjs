@@ -42,7 +42,7 @@ export function createAgents(pi, config, store) {
     // is still pending must not mislabel the failure notice with the new role.
     const role = active;
     store.save(role, selections[role]).catch(error =>
-      ctx?.ui?.notify?.(`PiAstra could not remember ${role} agent preferences: ${error.message}`, 'error'));
+      ctx?.ui?.notify?.(`Dispatch could not remember ${role} agent preferences: ${error.message}`, 'error'));
   };
   return {
     get active() { return active; },

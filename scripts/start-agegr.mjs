@@ -3,6 +3,8 @@ import { copyFileSync, existsSync, mkdirSync, statSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { parseTrialPort } from './env.mjs';
+
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const workspace = resolve(process.argv[2] || root);
 if (!statSync(workspace).isDirectory()) throw new Error('Workspace must be a directory.');
@@ -15,8 +17,7 @@ for (const name of ['settings.json', 'auth.json']) {
   const target = join(agentDir, name);
   if (!existsSync(target) && existsSync(source)) copyFileSync(source, target);
 }
-const port = Number(process.env.PIASTRA_TRIAL_PORT || 30141);
-if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('Invalid PIASTRA_TRIAL_PORT.');
+const port = parseTrialPort(process.env);
 const child = spawn(process.execPath, [
   join(root, 'node_modules', '@agegr', 'pi-web', 'bin', 'pi-web.js'),
   '--port', String(port), '--hostname', '127.0.0.1', '--no-open',

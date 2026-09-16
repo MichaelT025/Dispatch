@@ -28,7 +28,7 @@ seed(join(agentDir, 'settings.json'), {
 // inherit Astra for an unconfigured Go worker.
 const templates = ['general', 'fast', 'review'].map(name => ({
   name,
-  description: `PiAstra ${name} (prepared; runtime integration pending)`,
+  description: `Dispatch ${name} (prepared; runtime integration pending)`,
   promptMode: 'append',
   systemPrompt: readFileSync(join(root, 'roles', `${name}.md`), 'utf8'),
   enabledSkills: [],
@@ -42,7 +42,7 @@ seed(join(webDir, 'subagent-templates.seeded.json'), DEFAULT_TEMPLATES.map(t => 
 seed(join(webDir, 'client-state.json'), {
   __settings__: {
     settings: {
-      customSystemPrompt: 'PiAstra setup preview. Worker templates are disabled while the integration is being completed. Do not claim delegation is available or replace unavailable workers with parent-model subagents.',
+      customSystemPrompt: 'Dispatch setup preview. Worker templates are disabled while the integration is being completed. Do not claim delegation is available or replace unavailable workers with parent-model subagents.',
       promptMode: 'append',
       goalModeEnabled: false,
       visionBridgeEnabled: false,

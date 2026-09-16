@@ -758,7 +758,7 @@ test('/worktree pr does not open a slug-alias worktree occupying the managed pat
   }
 });
 
-test('/worktree pr refuses before gh or fetch while PiAstra workers are busy', async () => {
+test('/worktree pr refuses before gh or fetch while Dispatch workers are busy', async () => {
   const base = await mkdtemp(join(tmpdir(), 'piastra-pr-'));
   const saved = saveEnv();
   try {
@@ -781,7 +781,7 @@ test('/worktree pr refuses before gh or fetch while PiAstra workers are busy', a
 
     await runPr(commands, 1012, ctx);
 
-    assert.match(noticeText(notices), /2 PiAstra workers are still running/);
+    assert.match(noticeText(notices), /2 Dispatch workers are still running/);
     assert.equal(switchCalls.length, 0, 'the session switch must not be reached');
     assert.ok(
       !calls.some((entry) => entry.command === 'gh'),

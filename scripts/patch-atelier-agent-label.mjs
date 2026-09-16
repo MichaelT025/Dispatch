@@ -17,5 +17,5 @@ if (source.includes('// PiAstra active role label')) {
 \tconst label = agent ? agent.toUpperCase() + (state.activity === "ready" || state.activity === "working" ? "" : " · " + activityLabel) : activityLabel;`);
   await copyFile(target, `${target}.piastra-backup-${Date.now()}`);
   await writeFile(target, source);
-  console.log('Atelier footer now displays the selected PiAstra agent. Restart Pi or /reload.');
+  console.log('Atelier footer now displays the selected Dispatch agent. Restart Pi or /reload.');
 }

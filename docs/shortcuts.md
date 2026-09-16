@@ -1,9 +1,35 @@
-# PiAstra editor shortcuts
+# Dispatch editor shortcuts
 
-PiAstra installs a small set of keyboard shortcuts by replacing pi's main input
+Dispatch installs a small set of keyboard shortcuts by replacing pi's main input
 editor with a `CustomEditor` subclass (`extensions/piastra/shortcuts.ts`). All
 interception lives inside that editor's own `handleInput`, so nothing outside
 the main editor is affected.
+
+## Find help in the TUI
+
+Run **`/dispatch-help`** for commands, shortcuts and practical tips, or
+**`/dispatch-help shortcuts`** to open that section directly. This is a
+read-only overlay: it never sends a prompt or appends to the conversation.
+
+- Sections: **Up/Down** or **j/k**, **Enter/Right** to open.
+- Reading: **Up/Down/j/k**, **PgUp/PgDn**, **Home/End** to scroll;
+  **Enter/Right/Tab** next section, **Shift+Tab** previous, **Left/b** back.
+- **Esc/Ctrl+C** closes from either view. Text wraps on narrow terminals.
+
+The maintained Atelier footer appends `Tip: run /dispatch-help` immediately
+after model/reasoning when Dispatch help is available. It is hidden if the
+model segment is disabled, the terminal is too narrow, or Dispatch is absent.
+Standalone Atelier/plain Pi never gains this hint from a legacy Agent status.
+Re-run the managed installer and restart Pi to update installed copies.
+
+`dispatch --help` (or `node bin/dispatch.mjs -h` from this checkout) provides
+a short terminal overview without starting Pi. `dispatch setup` performs
+explicit authentication/configuration, `dispatch` starts the CLI, and
+`dispatch --web` starts the packaged WebUI in the foreground. `dispatch update`
+upgrades the same npm installation. Interactive CLI/Web startup shows a
+dismissible **"A Dispatch update is available. Run dispatch update."** notice
+when a newer stable release exists; startup checks are nonblocking and nothing
+installs silently.
 
 ## Design constraints
 
@@ -23,7 +49,7 @@ the main editor is affected.
 
 | Key | Effect |
 | --- | --- |
-| `Shift+Tab` | Cycle the primary PiAstra agents (orchestrator → general → fast → review) |
+| `Shift+Tab` | Cycle the primary Dispatch agents (orchestrator → general → fast → review) |
 | `Ctrl+T` | Native `app.thinking.cycle` (cycle the thinking level) |
 | `Ctrl+O` | Toggle tool output expansion — the compact-transcript plugin claims the toggle when compact mode is on; otherwise native `app.tools.expand` |
 | `Ctrl+V` | Native clipboard paste — clipboard images show as `[Image #1]`, `[Image #2]`, … |
@@ -31,7 +57,7 @@ the main editor is affected.
 | `Ctrl+X` | Arm the leader key for 2 seconds; a small hint (` x→ t y a w m `) appears on the editor border |
 | `Ctrl+X` then `t` | Native `app.thinking.toggle` (collapse/expand thinking blocks) |
 | `Ctrl+X` then `y` | Native `app.message.copy` (copy last assistant message) |
-| `Ctrl+X` then `a` | PiAstra agent picker (same list as `/agent`) |
+| `Ctrl+X` then `a` | Dispatch agent picker (same list as `/agent`) |
 | `Ctrl+X` then `w` | Worker overlay (same view as `/workers`) |
 | `Ctrl+X` then `m` | Native model picker (same as `Ctrl+L` / `/model`) |
 | `Ctrl+X` then `Esc` | Cancel the leader without aborting the agent |
@@ -93,7 +119,7 @@ restoration preserve image paths, but may display the raw paths again.
 
 When pi installs a custom editor, `setCustomEditorComponent` copies the app's
 native action handlers into the editor's public `actionHandlers` map for any
-editor that duck-types as a `CustomEditor`. PiAstra's editor therefore invokes
+editor that duck-types as a `CustomEditor`. Dispatch's editor therefore invokes
 `app.thinking.cycle`, `app.thinking.toggle`, `app.message.copy` and
 `app.model.select` **by action
 id** from that map — `Ctrl+T` and the leader `t` deliberately hit different
@@ -104,7 +130,7 @@ handling.
 
 ## Atelier cooperation and foreign editors
 
-The **PiAstra-maintained Atelier fork** cooperates with these shortcuts. Enable
+The **Dispatch-maintained Atelier fork** cooperates with these shortcuts. Enable
 it with `npm run install:cli -- --atelier`, then restart Pi or `/reload`. Merely
 editing this checkout does not update your installed extension copies. The
 upstream npm Atelier editor does not implement this cooperation protocol.
@@ -112,17 +138,17 @@ upstream npm Atelier editor does not implement this cooperation protocol.
 `installShortcuts` captures `ctx.ui.getEditorComponent()` before installing
 its own factory:
 
-- **PiAstra's own factory** is rebuilt with fresh session context. Its previous
+- **Dispatch's own factory** is rebuilt with fresh session context. Its previous
   instance is disposed, cancelling the leader and pending shortcut actions.
 - **The fork's Atelier factory** publishes a version-1 `editorCapability` with
-  ID `piastra.atelier-frame`. PiAstra preserves its frame presentation while
-  creating a single `PiastraEditor`. If PiAstra starts first, its capability
+  ID `piastra.atelier-frame`. Dispatch preserves its frame presentation while
+  creating a single `PiastraEditor`. If Dispatch starts first, its capability
   (`piastra.shortcuts`) lets Atelier compose the same frame onto that editor.
   The frame renders before the leader hint, so the hint stays visible.
-- **Unrecognized foreign factories** are left untouched. PiAstra warns and
+- **Unrecognized foreign factories** are left untouched. Dispatch warns and
   skips installation; Atelier also declines to replace an unknown editor.
 
-Factory capabilities provide `readPresentations`, and PiAstra additionally
+Factory capabilities provide `readPresentations`, and Dispatch additionally
 provides `composePresentation` and `withoutPresentationsFor`. Entries carry a
 session-owned token, chrome width, minimum width and rendering function. No
 cross-package runtime imports, global input listeners or registry overrides
@@ -130,7 +156,7 @@ are needed. Repeated enable operations do not nest frames.
 
 `/atelier disable` removes only its own frame, leaving shortcuts active;
 `/atelier enable` restores it. Cleanup checks the current factory's ownership,
-not a stale saved factory. Retired PiAstra factories cannot recreate an editor
+not a stale saved factory. Retired Dispatch factories cannot recreate an editor
 after shutdown. Both startup orders and shutdown orders are tested.
 
 The input component still inherits Pi's native submit, autocomplete, paste and
@@ -196,7 +222,10 @@ Keys while a worker is open:
 - `extensions/pi-atelier/tests/editor-cooperation.test.mjs` and
   `shortcut-lifecycle.test.mjs` — composed editor and real extension lifecycle checks.
 - `extensions/piastra/index.ts` — installs the shortcuts and shares the agent
-  picker between `/agent` and the leader `a` action.
+  picker between `/agent` and the leader `a` action; registers `/dispatch-help`.
+- `extensions/piastra/help.mjs` — shared help sections and terminal formatter.
+- `extensions/piastra/help-view.ts` — section picker and scrollable help viewer.
+- `bin/dispatch.mjs` — terminal entry point for help, setup and launching.
 
 ## Tests
 

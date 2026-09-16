@@ -62,5 +62,14 @@ These checks do not exercise interactive scrolling or terminal rendering.
   The old npm installation was compared with the integrity-verified 0.10.1
   tarball: this was its only source patch (the extra footer file was a backup).
   User sidebar/layout preferences remain in `pi-atelier.json`, not vendored code.
+- `src/footer.ts` shows a muted `Tip: run /dispatch-help` item immediately after
+  model + thinking inside the visible model segment, only when `FooterState`
+  carries `dispatchHelpAvailable === true` with an actual modelId. Same text in
+  compact density; droppable before model/thinking on narrow terminals.
+  `src/types.ts` adds the optional `FooterState.dispatchHelpAvailable` flag.
+  `extensions/index.ts` derives it per footer render from `pi.getCommands()`
+  (requires name `dispatch-help` with source `extension`; missing API or
+  errors mean false, never inferred from model names or Agent status text).
+  Retired footers report inert state and never retain the tip.
 - **No remote GitHub fork created.** This is an in-tree vendored fork only;
   upstream remains https://github.com/michaelmjhhhh/pi-atelier.

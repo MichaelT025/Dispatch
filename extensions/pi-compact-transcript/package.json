@@ -1,7 +1,7 @@
 {
   "name": "piastra-compact-transcript",
   "version": "0.10.1-piastra.1",
-  "description": "PiAstra-managed fork of pi-compact-transcript: collapsed tool previews with native delegate rendering and a session-scoped expansion policy.",
+  "description": "Dispatch-managed fork of pi-compact-transcript: collapsed tool previews with native delegate rendering and a session-scoped expansion policy.",
   "type": "module",
   "license": "MIT",
   "private": true,

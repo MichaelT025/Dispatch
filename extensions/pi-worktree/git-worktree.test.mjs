@@ -130,7 +130,7 @@ test('/worktree pr refuses before gh or the first mutating fetch', async () => {
 
   await commands.get('worktree').handler('pr 5', ctx);
 
-  assert.match(notices.map((entry) => entry.message).join('\n'), /2 PiAstra workers are still running/);
+  assert.match(notices.map((entry) => entry.message).join('\n'), /2 Dispatch workers are still running/);
   assert.match(notices.map((entry) => entry.message).join('\n'), /The worktree was not created/);
   assert.ok(
     !execCalls.some((call) => call.command === 'gh'),

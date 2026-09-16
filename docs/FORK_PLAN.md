@@ -1,6 +1,6 @@
 # Fork UI plan and status (pi-web-ui fork)
 
-Approved direction (per reference screenshots in `docs/reference/`): the original visual references are the upstream Codex captures `codex.png` / `codex_empty_sidebar.png`; the generated PiAstra captures are
+Approved direction (per reference screenshots in `docs/reference/`): the original visual references are the upstream Codex captures `codex.png` / `codex_empty_sidebar.png`; the generated Dispatch captures are
 `astra-01-chat-empty.png`, `astra-02-chooser.png`, `astra-03-files-inline.png`,
 `astra-04-terminal.png`, plus `astra-05-empty.png`. (Older generated
 `astra-01-initial.png` and `astra-03-files.png` were superseded and removed at
@@ -13,7 +13,8 @@ The existing CLI delegation flow is unchanged.
 
 ## Fork baseline
 
-- Sibling checkout: `../PiAstra-web-ui` (overridable with `PIASTRA_FORK_DIR`),
+- Sibling checkout: `../PiAstra-web-ui` (overridable with `DISPATCH_FORK_DIR`,
+  legacy `PIASTRA_FORK_DIR`),
   branch `piastra-redesign`.
 - Exact baseline: commit **1e54fafa00c754914e58441ee7315f2d15e87bfe**
   (`v0.80.0`, log head on 2026-09-12).
@@ -42,12 +43,12 @@ npm run start:fork [workspace]        # node scripts/start-fork.mjs
 - Runs the fork's built artifacts directly (`node <fork>/dist/server/index.js …`),
   bypassing `bin/pi-web-ui.mjs`'s service-install/version-check layer. `npm start`
   and every other CLI flow are untouched.
-- Loopback only (`--host 127.0.0.1`), port `PIASTRA_FORK_PORT` (default **8790**;
+- Loopback only (`--host 127.0.0.1`), port `DISPATCH_FORK_PORT` (legacy `PIASTRA_FORK_PORT`, default **8790**;
   8787 = original UI, 3001 = Tau, 30141 = agegr trial, 8789 = occupied by an
   unrelated local DSH server on this machine).
 - Isolated agent dir `.local/fork-agent`: settings.json is written fresh with the
   model defaults from `config/agents.json` plus a deliberate absolute path
-  reference to this checkout's PiAstra extension (`extensions/piastra/index.ts`,
+  reference to this checkout's Dispatch extension (`extensions/piastra/index.ts`,
   loaded through the SDK's `settings.json → extensions` mechanism — no copies of
   extension code). The launcher copies `auth.json` / `models-store.json` /
   `models.json` bytes **only** from the existing local credential path
@@ -57,7 +58,7 @@ npm run start:fork [workspace]        # node scripts/start-fork.mjs
   happens into an empty directory. Tests never use these files: they build
   synthetic auth and a temporary agent dir.
 - Isolated UI state `.local/fork-web`: client-state.json is seeded with
-  `disabledAgentTools` (see policy below) and PiAstra role subagent templates
+  `disabledAgentTools` (see policy below) and Dispatch role subagent templates
   staged disabled, plus the seeded-roster sidecar so the fork does not auto-add
   its six built-in templates.
 - Global Pi settings, the user's global extension install and the settings used
@@ -73,7 +74,7 @@ npm run start:fork [workspace]        # node scripts/start-fork.mjs
    `subagent_spawn`, `subagent_get_result`, `subagent_steer`, `subagent_list`,
    `subagent_stop`, `subagent_wait_all`, `subagent_templates`, `delegate_task`,
    the AI-terminal tools, `edit_soft`.
-2. PiAstra extension hard block (defence in depth, active in every PiAstra
+2. Dispatch extension hard block (defence in depth, active in every Dispatch
    session incl. the CLI): a `tool_call` handler returns
    `{ block: true }` for every upstream delegation tool even if someone
    re-enables them in the fork settings panel. (`extensions/piastra/index.ts`,
@@ -100,12 +101,12 @@ npm run start:fork [workspace]        # node scripts/start-fork.mjs
   for hiding deferred tabs later), `PI_WEB_HOST`, `PI_WEB_TOKEN`, etc. No fork
   server source edits were needed; none of the new behaviour depends on fork
   server changes.
-- New parent-side env: `PIASTRA_FORK_PORT` (number, default 8790),
-  `PIASTRA_FORK_DIR` (fork checkout path). Launcher CLI: first positional
+- New parent-side env: `DISPATCH_FORK_PORT` (legacy `PIASTRA_FORK_PORT`, number, default 8790),
+  `DISPATCH_FORK_DIR` (legacy `PIASTRA_FORK_DIR`, fork checkout path). Launcher CLI: first positional
   argument is the workspace, same as `npm start`.
-- The fork session or model panel can freely switch models; PiAstra role
+- The fork session or model panel can freely switch models; Dispatch role
   switching rides on top via the `/agent` slash command (extension commands are
-  surfaced by the fork's slash-command picker; `/piastra` also available).
+  surfaced by the fork's slash-command picker; `/dispatch` canonical, `/piastra` alias).
 
 ## Verification evidence (no model requests used)
 
@@ -150,7 +151,7 @@ npm run start:fork [workspace]        # node scripts/start-fork.mjs
 
 - [x] Fork baseline verified, build prerequisites confirmed
 - [x] `npm run start:fork` launcher (loopback, isolated state, seeded settings)
-- [x] PiAstra extension loads in fork sessions (settings-managed path)
+- [x] Dispatch extension loads in fork sessions (settings-managed path)
 - [x] Upstream subagent/delegation tools disabled (seed + hard block)
 - [x] Role switching verified over SDK (`/agent`)
 - [x] UI frontend implemented in sibling checkout (chat, chooser, inline files,

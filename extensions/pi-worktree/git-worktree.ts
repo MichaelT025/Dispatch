@@ -293,7 +293,7 @@ export function worktreeSwitchRefusal(state: {
 		return "Queued messages are waiting. Wait for them to be sent or clear the queue before switching to a worktree session.";
 	}
 	if (state.activeWorkers > 0) {
-		return `${state.activeWorkers} PiAstra worker${state.activeWorkers === 1 ? " is" : "s are"} still running. Wait for completion or cancel the delegate call before switching to a worktree session.`;
+		return `${state.activeWorkers} Dispatch worker${state.activeWorkers === 1 ? " is" : "s are"} still running. Wait for completion or cancel the delegate call before switching to a worktree session.`;
 	}
 	return undefined;
 }
@@ -424,7 +424,7 @@ export async function switchToWorktree(
 			withSession: async (replacement) => {
 				replacement.ui.notify(
 					`Started a fresh session in ${title}\n${targetPath}\n\n` +
-						"Tools, extensions, Git and PiAstra workers now use this worktree." +
+						"Tools, extensions, Git and Dispatch workers now use this worktree." +
 						(sourceSaved
 							? `\nThe earlier conversation stays saved at:\n${sourceFile}`
 							: "\nThe earlier conversation was ephemeral and is not saved."),
@@ -956,7 +956,7 @@ async function switchToSessionFile(
 		const result = await ctx.switchSession(target.path, {
 			withSession: async (replacement) => {
 				replacement.ui.notify(
-					`Resumed "${target.label}" in ${branch}\n${target.cwd}\n\nTools, extensions, Git and PiAstra workers now use this checkout.`,
+					`Resumed "${target.label}" in ${branch}\n${target.cwd}\n\nTools, extensions, Git and Dispatch workers now use this checkout.`,
 					"info",
 				);
 			},

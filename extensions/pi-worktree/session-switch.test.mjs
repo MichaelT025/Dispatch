@@ -488,7 +488,7 @@ test('open on the current worktree still starts a fresh session in place', async
   }
 });
 
-test('running PiAstra workers refuse switching and creation before Git work', async () => {
+test('running Dispatch workers refuse switching and creation before Git work', async () => {
   const base = await mkdtemp(join(tmpdir(), 'piastra-switch-'));
   try {
     const repo = await makeRepo(base, 'busy repo');
@@ -503,7 +503,7 @@ test('running PiAstra workers refuse switching and creation before Git work', as
       const before = await listJsonl(join(agentDir, 'sessions'));
 
       await harness.runtime.session.prompt('/worktree add feat-new');
-      assert.match(harness.text(), /2 PiAstra workers are still running/);
+      assert.match(harness.text(), /2 Dispatch workers are still running/);
       assert.match(harness.text(), /The worktree was not created/);
       assert.ok(!git(repo, 'worktree', 'list', '--porcelain').includes('feat-new'));
 
@@ -730,7 +730,7 @@ test('a worktree created before a late busy switch is kept and its path reported
       const managedPath = join(home, '.pi', 'worktrees', 'late busy repo', 'feat-late-busy');
       assert.equal(git(managedPath, 'rev-parse', '--is-inside-work-tree').trim(), 'true', 'the worktree is kept on disk');
       const text = harness.text();
-      assert.match(text, /PiAstra worker is still running/);
+      assert.match(text, /Dispatch worker is still running/);
       assert.match(text, /The session was not changed/);
       assert.match(text, /Worktree created, but the session was not switched/);
       assert.ok(text.includes(managedPath), 'the created path is reported for recovery');
@@ -933,7 +933,7 @@ test('worktree switch helpers expose the documented refusal reasons and guard ha
   assert.equal(worktreeSwitchRefusal({ idle: true, pending: false, activeWorkers: 0 }), undefined);
   assert.match(worktreeSwitchRefusal({ idle: false, pending: false, activeWorkers: 0 }), /current turn/);
   assert.match(worktreeSwitchRefusal({ idle: true, pending: true, activeWorkers: 0 }), /Queued messages/);
-  assert.match(worktreeSwitchRefusal({ idle: true, pending: false, activeWorkers: 3 }), /3 PiAstra workers/);
+  assert.match(worktreeSwitchRefusal({ idle: true, pending: false, activeWorkers: 3 }), /3 Dispatch workers/);
   assert.match(worktreeSwitchRefusal({ idle: true, pending: false, activeWorkers: 0, compacting: true }), /compaction is still running/);
   assert.match(worktreeSwitchRefusal({ idle: true, pending: false, activeWorkers: 0, summarizing: true }), /branch summary is still running/);
 

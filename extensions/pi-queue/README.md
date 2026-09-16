@@ -1,4 +1,4 @@
-# pi-queue (PiAstra fork)
+# pi-queue (Dispatch fork)
 
 Project-owned fork of the actual `DeliveryQueue` from
 [pi-queue-steer-factory](https://github.com/monotykamary/pi-queue-steer-factory)
@@ -17,7 +17,7 @@ in `index.ts` only:
   `rpc-bridge.ts`, `control-bridge.ts` — none are imported by this runtime fork.
 - Adapted: `index.ts` keeps the upstream main-queue machinery (shortcuts,
   editing, ordering, pause/resume, persistence, command rows, Fabric interop)
-  unchanged and adds the PiAstra entry points:
+  unchanged and adds the Dispatch entry points:
   - `/q <prompt>` — appends a follow-up delivery row. While idle it parks the
     row paused, exactly like Alt+Enter on a stopped composer; during a run it
     queues for the run's tail like a native follow-up.
@@ -32,7 +32,7 @@ in `index.ts` only:
   Pi's fire-and-forget `sendUserMessage` (see below).
 
 Not installed by default: add this directory's `index.ts` to the Pi
-`settings.json` extensions list. The PiAstra installer vendors and registers it
+`settings.json` extensions list. The Dispatch installer vendors and registers it
 when present. Upstream commands `/pause`, `/queue-drain` (with
 `/piastra-queue-drain` kept as an alias) and all editing shortcuts keep their
 upstream names and keybindings. The interop surface keeps its upstream contract:

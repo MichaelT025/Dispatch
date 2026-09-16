@@ -516,6 +516,27 @@ export default function atelierExtension(
 		);
 	}
 
+	function isDispatchHelpAvailable(api: ExtensionAPI): boolean {
+		// Derived per render from the live command registry. Requires the actual
+		// extension command dispatch-help; never inferred from model names or
+		// Agent status text. Missing API, non-array results, or errors mean false.
+		try {
+			const getCommands = (api as { getCommands?: unknown }).getCommands;
+			if (typeof getCommands !== "function") return false;
+			const list = (getCommands as () => unknown).call(api);
+			if (!Array.isArray(list)) return false;
+			return list.some(
+				(entry) =>
+					typeof entry === "object" &&
+					entry !== null &&
+					(entry as { name?: unknown }).name === "dispatch-help" &&
+					(entry as { source?: unknown }).source === "extension",
+			);
+		} catch {
+			return false;
+		}
+	}
+
 	function installFooter(targetSession: ActiveSession): void {
 		const { ctx } = targetSession;
 		const token = targetSession.token;
@@ -548,6 +569,7 @@ export default function atelierExtension(
 						...(branch ? { branch } : {}),
 						...(performance ? { performance } : {}),
 						extensionStatuses: currentSession.extensionStatuses,
+						dispatchHelpAvailable: isDispatchHelpAvailable(pi),
 					};
 				},
 				getConfig: () => getCurrentSession()?.runtime.getConfig() ?? retiredConfig,

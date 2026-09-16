@@ -119,7 +119,7 @@ export async function settleWorkerBatch(promises) {
 }
 
 export function workerGuardMessage(active) {
-  return `${active} PiAstra worker${active === 1 ? ' is' : 's are'} still running. Wait for completion or cancel the delegate call before switching sessions.`;
+  return `${active} Dispatch worker${active === 1 ? ' is' : 's are'} still running. Wait for completion or cancel the delegate call before switching sessions.`;
 }
 
 export function sessionPhaseGuardMessage({ compacting, summarizing } = {}) {
