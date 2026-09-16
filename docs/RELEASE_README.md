@@ -79,4 +79,4 @@ Plain Pi settings are not modified by the new launcher. Existing legacy PiAstra/
 
 To uninstall, remove the npm package with the same package manager and installation scope you used to install it. Your Dispatch state remains until you explicitly delete it. Keep it if you intend to reinstall.
 
-See `THIRD_PARTY_NOTICES.md` and each included upstream license for maintained-fork attribution. This development artifact remains **private and unpublished** until release approval and selection of the original-code license; no published release is claimed.
+See `THIRD_PARTY_NOTICES.md`, the root MIT `LICENSE`, and each included upstream license for maintained-fork attribution. This development artifact remains **private and unpublished** until release approval; no published release is claimed.

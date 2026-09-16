@@ -10,11 +10,13 @@ All three implementation phases are complete as of `af34c51`:
 - [x] Phase 2 — CLI/Web launcher and explicit authentication/setup wizard.
 - [x] Phase 3 — Startup update notices, explicit self-update, clean-install/upgrade verification, and release help/docs.
 
-Three release gates remain closed and are not implementation work:
+Two release gates remain closed and are not implementation work:
 
 - **Publishing** — no npm publish has been performed; publication requires separate approval.
-- **License** — the original Dispatch code has no selected license (no root `LICENSE`), so nothing may be published until one is chosen.
 - **User approval** — the artifact, version and release notes need explicit user sign-off.
+
+Original Dispatch code is licensed under MIT in the root `LICENSE`; retained
+third-party MIT licenses remain in place.
 
 Do not publish, install globally, or run real authentication during automated tests.
 

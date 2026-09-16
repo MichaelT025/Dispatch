@@ -232,6 +232,7 @@ export function sourceArtifactErrors(root) {
     'roles/fast.md',
     'roles/review.md',
     'README.md',
+    'LICENSE',
     'docs/RELEASE_README.md',
     'THIRD_PARTY_NOTICES.md',
     'package.json',

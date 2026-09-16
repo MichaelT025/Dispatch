@@ -3,14 +3,12 @@
 This file records third-party code vendored in the Dispatch checkout and in
 the generated single-artifact release package (`.release/package`).
 
-## Original Dispatch code: no selected license (publish gate)
+## Original Dispatch code (MIT)
 
-No license has been selected for the original Dispatch source in this
-repository and there is no root `LICENSE` file. Without a license the original
-code is not granted for redistribution, so **choosing one is a publish gate**:
-publication must not proceed until then. This file neither grants nor invents a
-license for original Dispatch code, and the third-party licenses below apply
-only to the code they name.
+Original Dispatch code in this repository is licensed under the MIT License;
+see the root `LICENSE` file. The license applies only to original Dispatch
+code and does not replace or relicense retained third-party code. The
+third-party licenses below apply only to the code they name.
 
 ## Vendored extension forks (MIT, retained in place)
 
@@ -28,8 +26,7 @@ The `extensions/` copies are runtime sources, not development tooling.
   `extensions/pi-todo/vendor/rpiv-config/` (`@juicesharp/rpiv-config` 2.9.0,
   MIT).
 - `extensions/piastra/` and `extensions/pi-ui/` are original Dispatch code
-  with **no selected license yet** (publish gate above); they ship alongside
-  the forks above.
+  under MIT; they ship alongside the forks above.
 
 ## Vendored WebUI build (build-time input only)
 
@@ -39,7 +36,7 @@ The release builder copies the already-built WebUI checkout into
 `LICENSE*` and `README*`). The WebUI retains its own upstream license files;
 no WebUI license is re-stated here. The sibling checkout is a build-time
 input only and is never published as a dependent `@michaelt025/dispatch-web`
-package.
+package. Its upstream MIT license is retained.
 
 ## npm production dependencies (own licenses retained)
 

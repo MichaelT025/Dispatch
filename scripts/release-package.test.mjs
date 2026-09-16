@@ -35,6 +35,7 @@ function makeRoot() {
   write('config/checks.json', '{}');
   for (const r of ['orchestrator', 'general', 'fast', 'review']) write(`roles/${r}.md`, `# ${r}\n`);
   write('README.md', '# Dispatch\n');
+  write('LICENSE', 'MIT License\n');
   write('docs/RELEASE_README.md', '# Packaged Dispatch\n');
   write('THIRD_PARTY_NOTICES.md', '# notices\n');
   write('assets/dispatch.svg', '<svg></svg>');
