@@ -35,6 +35,7 @@ function makeRoot() {
   write('config/checks.json', '{}');
   for (const r of ['orchestrator', 'general', 'fast', 'review']) write(`roles/${r}.md`, `# ${r}\n`);
   write('README.md', '# Dispatch\n');
+  write('docs/RELEASE_README.md', '# Packaged Dispatch\n');
   write('THIRD_PARTY_NOTICES.md', '# notices\n');
   write('assets/dispatch.svg', '<svg></svg>');
   for (const entry of MANAGED_ENTRIES) write(entry, '// entry\n');
@@ -123,6 +124,7 @@ describe('buildRelease staging', () => {
       assert.ok(existsSync(join(outDir, 'lib', 'state.mjs')));
       assert.ok(!existsSync(join(outDir, 'lib', 'state.test.mjs')));
       assert.ok(existsSync(join(outDir, 'assets', 'dispatch.svg')));
+      assert.match(readFileSync(join(outDir, 'README.md'), 'utf8'), /Packaged Dispatch/);
       assert.ok(existsSync(join(outDir, 'extensions', 'pi-todo', 'vendor', 'rpiv-config', 'index.ts')));
       // Fork licenses retained.
       for (const lic of [
