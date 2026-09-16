@@ -408,7 +408,7 @@ test('packaged artifact installs CLI + WebUI without source and shuts down grace
 
     // Second tarball from a COPY of the installed package (excluding
     // node_modules) with ONLY the root package version bumped. The copy's
-    // private:true and everything else stay unchanged so the upgrade
+    // manifest and everything else stay unchanged so the upgrade
     // artifact is a faithful local stand-in for a published release.
     const upgradeSource = join(tempRoot, 'upgrade-source');
     // Only skip NESTED dependency directories (relative to pkgRoot); the
