@@ -7,6 +7,11 @@
 
 Dispatch (formerly PiAstra) is a lightweight Pi setup with Astra planning, OpenCode Go workers, and Astra milestone review.
 
+This repository produces two distinct things, documented separately below:
+
+- the **generated release package** (`@michaelt025/dispatch`, staged by `npm run build:release`) — the supported end-user install, documented under [Packaged Dispatch](#packaged-dispatch); and
+- the **legacy source checkout** (the `install:cli` installer, developer workflows and the Tau/agegr/Fork UI trials), retained for compatibility and documented under [Legacy checkout installation](#legacy-checkout-installation-use-from-any-directory).
+
 ### Rebrand compatibility
 
 - `/dispatch` is the role-summary command; `/piastra` remains an alias.
@@ -106,7 +111,7 @@ Validation: `npm test` runs the offline extension and launcher unit tests across
 
 To uninstall, remove the Dispatch extension entry from the `extensions` array in your Pi settings and restore your preferred model defaults from the timestamped settings backup. Installed files and worker transcripts can remain until you choose to remove them.
 
-## Preferred UI trial: Tau
+## Legacy checkout UI trial: Tau
 
 Run `npm run start:tau` in a terminal and open http://127.0.0.1:3001. [Tau](https://github.com/deflating/tau) runs as an extension inside Pi and mirrors the active session. Keep that terminal running. It is the preferred trial for a minimal chat interface; historical sessions are read-only in its browser view, unlike agegr's fuller session manager.
 
@@ -114,7 +119,7 @@ The launcher uses ignored `.local/tau-agent` storage, binds explicitly to loopba
 
 Tau writes its instance registry under the user's `.pi/tau-instances`. Its upstream settings panel also accesses the global Pi settings file, so the trial's isolated agent directory does not isolate every Tau-specific preference. Appearance customization can use `TAU_STATIC_DIR` without changing Pi itself.
 
-## Alternative UI trial: agegr/pi-web
+## Legacy checkout UI trial: agegr/pi-web
 
 Run `npm run start:agegr` and open http://127.0.0.1:30141 to compare [agegr/pi-web](https://github.com/agegr/pi-web). Select the Dispatch project directory in its sidebar. The original UI remains available through `npm start`; the default has not been switched while evaluating the replacement.
 
@@ -122,9 +127,9 @@ The alternative pins `@agegr/pi-web` 0.9.1, which uses Pi 0.85.1 and Next.js. It
 
 A scoped Next.js 16.3.3 override addresses GHSA-p293-qw3h-jr36 and GHSA-2xp9-vwfh-vxw4 in the UI's pinned 16.3.1 dependency. Keep this override until upstream selects a fixed release.
 
-## Fork UI
+## Legacy checkout trial: Fork UI
 
-`npm run start:fork` runs the Dispatch Web fork of pi-web-ui from a **separate sibling checkout** (`../PiAstra-web-ui`, overridable with `DISPATCH_FORK_DIR`, legacy `PIASTRA_FORK_DIR`) on http://127.0.0.1:8790, using built artifacts only, with isolated agent/UI state and the delegation extension active. The sibling is a local fork branch (`piastra-redesign`, UI commit `fe859057f991861780c87b051113f2a6766b7e1e`) that is **not published to GitHub**; the launcher requires its `dist/server/index.js` and `web/dist/index.html` to be built first. See [FORK_PLAN.md](docs/FORK_PLAN.md) for the approved plan, exact fork baseline, settings layout and current evidence. The launcher copies credential bytes from the existing local path once and never prints or commits them.
+`npm run start:fork` runs the Dispatch Web fork of pi-web-ui from a **separate sibling checkout** (`../PiAstra-web-ui`, overridable with `DISPATCH_FORK_DIR`, legacy `PIASTRA_FORK_DIR`) on http://127.0.0.1:8790, using built artifacts only, with isolated agent/UI state and the delegation extension active. This legacy trial launcher is the only path that needs the sibling; the generated release package bundles the built WebUI and does not use `../PiAstra-web-ui` at runtime. The sibling is a local fork branch (`piastra-redesign`, UI commit `fe859057f991861780c87b051113f2a6766b7e1e`) that is **not published to GitHub**; the launcher requires its `dist/server/index.js` and `web/dist/index.html` to be built first. See [FORK_PLAN.md](docs/FORK_PLAN.md) for the approved plan, exact fork baseline, settings layout and current evidence. The launcher copies credential bytes from the existing local path once and never prints or commits them.
 
 ## Architecture
 
@@ -139,15 +144,15 @@ The Express dependency has a scoped `qs` 6.16.0 override for GHSA-x5fp-wj9c-mxmx
 | Fast helpers, multiple concurrent instances | DeepSeek V4.1 Flash, provisional | Not selected |
 | Milestone reviewer | Astra | Medium |
 
-## Current state
+## Legacy checkout: current state
 
-Repository setup is implemented. The upstream web UI runs locally with isolated settings and authentication. Role prompts are prepared in `roles/`; model choices are in `config/agents.json`.
+In this source checkout, repository setup is implemented. The upstream web UI runs locally with isolated settings and authentication. Role prompts are prepared in `roles/`; model choices are in `config/agents.json`. For the packaged launcher, setup and update status, see [Packaged Dispatch](#packaged-dispatch) above.
 
 **CLI delegation is active through the user extension described above.** The older UI templates remain disabled; they are a separate integration. No upstream fork is required.
 
-## Run
+## Legacy checkout: run the upstream web UI
 
-Requires Node 22.19+ and Git.
+These commands run the upstream web UI from the checkout, not the packaged Dispatch CLI/WebUI. Requires Node 22.19+ and Git.
 
 ```sh
 npm ci
@@ -181,7 +186,7 @@ After the first green GitHub run, configure the `main` branch ruleset to require
 - `Tests (windows-latest, Node 22)`
 - `Tests (ubuntu-latest, Node 24)`
 
-## Fork UI status
+## Legacy checkout: Fork UI status
 
 The fork UI frontend is implemented in the sibling checkout at commit `fe85905`; the reference images pair the original upstream Codex captures (`codex.png`, `codex_empty_sidebar.png`) with generated Dispatch captures (`astra-01-chat-empty.png`, `astra-02-chooser.png`, `astra-03-files-inline.png`, `astra-04-terminal.png`, `astra-05-empty.png`). The parent-side launcher and integration policy are in place (`npm run test:fork` 15/15, `npm run test:cli` 10/10). The sibling's final typecheck, `build:web` and browser shell runs all pass; an earlier run had a startup empty-state timing flake that did not reproduce in the final passes. No provider/model requests were made, so subscription access in fork sessions is unverified. The CLI workflow and the tau/agegr trials remain available independently.
 

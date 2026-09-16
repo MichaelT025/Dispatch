@@ -6,7 +6,7 @@ Requires Node.js 22.19+ and Git (including Git Bash on Windows).
 
 ## Install and set up
 
-During development, install the supplied tarball with `npm install -g <path-to-dispatch.tgz>`. Once a release is published, use `npm install -g @michaelt025/dispatch`.
+The package is **private and unpublished** while it is being tested: there is currently no published release, and `npm install -g @michaelt025/dispatch` becomes valid only after a separately approved publication. During development, install the supplied tarball with `npm install -g <path-to-dispatch.tgz>`.
 
 ```sh
 dispatch setup
@@ -59,6 +59,18 @@ This updates the same npm installation, including its bundled WebUI/extensions, 
 
 The package may be unpublished while testing a development tarball; in that case the startup check stays silent and explicit update reports that no published release is available.
 
+## Development tarball test
+
+From the parent checkout, build, pack and run the packaged integration test:
+
+```sh
+npm run build:release -- --web-dir <maintained-webui-checkout>
+npm pack ./.release/package --pack-destination .release
+DISPATCH_TEST_TARBALL="$PWD/.release/michaelt025-dispatch-<version>.tgz" npm run test:package
+```
+
+That test installs the tarball into an isolated prefix and makes no real authentication request and no global install. Nothing is published.
+
 ## Configuration and compatibility
 
 By default, `~/.dispatch` contains `agent/` (Pi settings, auth, sessions and `piastra/` role preferences/transcripts), `web/` (browser state), and `state.json`. Override the root with `DISPATCH_HOME`. Inherited `PI_CODING_AGENT_DIR` and session-directory overrides do not redirect Dispatch. This is configuration isolation, not filesystem sandboxing.
@@ -67,4 +79,4 @@ Plain Pi settings are not modified by the new launcher. Existing legacy PiAstra/
 
 To uninstall, remove the npm package with the same package manager and installation scope you used to install it. Your Dispatch state remains until you explicitly delete it. Keep it if you intend to reinstall.
 
-See `THIRD_PARTY_NOTICES.md` and each included upstream license for maintained-fork attribution. This development artifact remains private until release approval and selection of the original-code license.
+See `THIRD_PARTY_NOTICES.md` and each included upstream license for maintained-fork attribution. This development artifact remains **private and unpublished** until release approval and selection of the original-code license; no published release is claimed.

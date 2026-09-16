@@ -4,11 +4,31 @@ Implementation contract for `@michaelt025/dispatch`. Publishing remains disabled
 
 ## Phases
 
-1. Pin and verify Pi 0.85.1, isolated state helpers, and a single generated npm artifact.
-2. Implement the CLI/Web launcher and explicit authentication/setup wizard.
-3. Implement startup update notices and explicit self-update, then clean-install/upgrade verification and release help/docs.
+All three implementation phases are complete as of `af34c51`:
 
-Complete and verify each phase before its scoped commits. Do not publish, install globally, or run real authentication during automated tests.
+- [x] Phase 1 — Pin and verify Pi 0.85.1, isolated state helpers, and a single generated npm artifact.
+- [x] Phase 2 — CLI/Web launcher and explicit authentication/setup wizard.
+- [x] Phase 3 — Startup update notices, explicit self-update, clean-install/upgrade verification, and release help/docs.
+
+Three release gates remain closed and are not implementation work:
+
+- **Publishing** — no npm publish has been performed; publication requires separate approval.
+- **License** — the original Dispatch code has no selected license (no root `LICENSE`), so nothing may be published until one is chosen.
+- **User approval** — the artifact, version and release notes need explicit user sign-off.
+
+Do not publish, install globally, or run real authentication during automated tests.
+
+## Local build, pack and test
+
+Build and verify the artifact from this checkout. The maintained WebUI checkout is a **build-time** input only; installed packages do not need it:
+
+```sh
+npm run build:release -- --web-dir <path>       # stages .release/package
+npm pack ./.release/package --pack-destination .release
+DISPATCH_TEST_TARBALL="$PWD/.release/michaelt025-dispatch-<version>.tgz" npm run test:package
+```
+
+`npm run test:package` installs the packed tarball into an isolated prefix and exercises the real installed launcher, the packaged WebUI lifecycle, and a local-tarball upgrade that preserves user state. It is explicit and opt-in and never runs under root `npm test`. These steps make **no global install and perform no real authentication**; the package stays `private: true` until publication is separately approved.
 
 ## Package and runtime
 

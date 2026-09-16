@@ -25,7 +25,11 @@ Re-run the managed installer and restart Pi to update installed copies.
 `dispatch --help` (or `node bin/dispatch.mjs -h` from this checkout) provides
 a short terminal overview without starting Pi. `dispatch setup` performs
 explicit authentication/configuration, `dispatch` starts the CLI, and
-`dispatch --web` starts the packaged WebUI in the foreground.
+`dispatch --web` starts the packaged WebUI in the foreground. `dispatch update`
+upgrades the same npm installation. Interactive CLI/Web startup shows a
+dismissible **"A Dispatch update is available. Run dispatch update."** notice
+when a newer stable release exists; startup checks are nonblocking and nothing
+installs silently.
 
 ## Design constraints
 
