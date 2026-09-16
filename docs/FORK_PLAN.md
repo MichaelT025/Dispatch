@@ -13,7 +13,7 @@ The existing CLI delegation flow is unchanged.
 
 ## Fork baseline
 
-- Sibling checkout: `../PiAstra-web-ui` (overridable with `DISPATCH_FORK_DIR`,
+- Sibling checkout: `../DispatchWeb` (overridable with `DISPATCH_FORK_DIR`,
   legacy `PIASTRA_FORK_DIR`),
   branch `piastra-redesign`.
 - Exact baseline: commit **1e54fafa00c754914e58441ee7315f2d15e87bfe**

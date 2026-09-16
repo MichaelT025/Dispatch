@@ -10,7 +10,7 @@ All three implementation phases are complete as of `af34c51`:
 - [x] Phase 2 — CLI/Web launcher and explicit authentication/setup wizard.
 - [x] Phase 3 — Startup update notices, explicit self-update, clean-install/upgrade verification, and release help/docs.
 
-Both PRs (PiAstra #12, pi-web-ui #7) were manually tested and merged; publishing is approved. See [Publishing](#publishing) below.
+Both PRs (Dispatch #12, DispatchWeb #7) were manually tested and merged; publishing is approved. See [Publishing](#publishing) below.
 
 Original Dispatch code is licensed under MIT in the root `LICENSE`; retained
 third-party MIT licenses remain in place.

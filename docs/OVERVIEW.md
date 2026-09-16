@@ -78,4 +78,4 @@ Housekeeping:
 
 ## Dispatch Web
 
-`dispatch --web` serves a browser UI for the same sessions, with the agent picker, Workers pane, file and terminal views. It runs the Pi SDK in-process on loopback only; the CLI extension publishes worker state to it over an in-process event channel (`piastra:workers`), so nothing polls. Its source lives in the sibling repository [MichaelT025/pi-web-ui](https://github.com/MichaelT025/pi-web-ui) and is built into the package at release time.
+`dispatch --web` serves a browser UI for the same sessions, with the agent picker, Workers pane, file and terminal views. It runs the Pi SDK in-process on loopback only; the CLI extension publishes worker state to it over an in-process event channel (`piastra:workers`), so nothing polls. Its source lives in the sibling repository [MichaelT025/DispatchWeb](https://github.com/MichaelT025/DispatchWeb) and is built into the package at release time.

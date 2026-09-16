@@ -2,7 +2,7 @@
 
 > Historical note (2026-09-15): milestone record for the Dispatch Web (formerly PiAstra) redesign branch. Commit hashes below are history, not the current baseline.
 
-Source checkout: `C:\Users\micha\Documents\Projects\Personal\PiAstra-web-ui`, branch `piastra-redesign`.
+Source checkout: `C:\Users\micha\Documents\Projects\Personal\DispatchWeb`, branch `piastra-redesign`.
 Starting commit: `fe859057f991861780c87b051113f2a6766b7e1e`. Current milestone: `503c3a4`.
 Original visual targets remain `reference/codex.png` and `reference/codex_empty_sidebar.png`.
 

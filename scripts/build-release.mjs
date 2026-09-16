@@ -32,7 +32,7 @@ import { fileURLToPath } from 'node:url';
 const HERE = dirname(fileURLToPath(import.meta.url));
 const DEFAULT_ROOT = resolve(HERE, '..');
 export const DEFAULT_OUT_DIR_NAME = join('.release', 'package');
-export const DEFAULT_FORK_SIBLING = join('..', 'PiAstra-web-ui');
+export const DEFAULT_FORK_SIBLING = join('..', 'DispatchWeb');
 
 /** Marker identifying owned release output; guards destructive replacement. */
 export const RELEASE_MARKER_FILE = '.dispatch-release.json';
@@ -389,9 +389,9 @@ export function buildRelease({ root = DEFAULT_ROOT, webRoot, outDir, buildWeb = 
     license: 'MIT',
     type: 'module',
     keywords: ['pi', 'coding-agent', 'ai', 'orchestration', 'cli', 'web-ui', 'llm'],
-    repository: { type: 'git', url: 'git+https://github.com/MichaelT025/PiAstra.git' },
-    homepage: 'https://github.com/MichaelT025/PiAstra#readme',
-    bugs: { url: 'https://github.com/MichaelT025/PiAstra/issues' },
+    repository: { type: 'git', url: 'git+https://github.com/MichaelT025/Dispatch.git' },
+    homepage: 'https://github.com/MichaelT025/Dispatch#readme',
+    bugs: { url: 'https://github.com/MichaelT025/Dispatch/issues' },
     engines: { node: '>=22.19.0' },
     bin: { dispatch: 'bin/dispatch.mjs' },
     scripts: { postinstall: 'node lib/install-notice.mjs' },

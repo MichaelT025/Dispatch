@@ -35,8 +35,8 @@ export const DEFAULT_PORT = 8787;
 export const DEFAULT_FORK_PORT = 8790;
 export const DEFAULT_TRIAL_PORT = 30141;
 export const DEFAULT_TAU_PORT = 3001;
-/** Sibling checkout default stays ../PiAstra-web-ui because the repo was not renamed. */
-export const DEFAULT_FORK_SIBLING = join('..', 'PiAstra-web-ui');
+/** Default Dispatch Web sibling checkout. */
+export const DEFAULT_FORK_SIBLING = join('..', 'DispatchWeb');
 
 export function parseMainPort(env = process.env) {
   return parsePortEnv(env, 'DISPATCH_PORT', 'PIASTRA_PORT', DEFAULT_PORT);

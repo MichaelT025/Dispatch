@@ -9,7 +9,7 @@ import { forkArtifactErrors } from '../../scripts/start-fork.mjs';
 
 // tests/integration/fork-runtime.test.mjs lives two levels below the repo root.
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
-const defaultForkRoot = join(root, '..', 'PiAstra-web-ui');
+const defaultForkRoot = join(root, '..', 'DispatchWeb');
 const forkRoot = resolve(process.env.DISPATCH_FORK_DIR || process.env.PIASTRA_FORK_DIR || defaultForkRoot);
 const sdkEntry = join(forkRoot, 'node_modules', '@earendil-works', 'pi-coding-agent', 'dist', 'index.js');
 

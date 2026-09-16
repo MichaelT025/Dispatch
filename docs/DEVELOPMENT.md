@@ -17,7 +17,7 @@ Working on Dispatch itself. Users should follow [Getting started](GETTING_STARTE
 | `tests/release/` | Opt-in packaged-install test. |
 | `docs/` | This documentation. |
 
-Dispatch Web lives in the sibling repository [pi-web-ui](https://github.com/MichaelT025/pi-web-ui), expected at `../PiAstra-web-ui`. It is a build-time input only; installed packages bundle its output under `vendor/web-ui/`.
+Dispatch Web lives in the sibling repository [DispatchWeb](https://github.com/MichaelT025/DispatchWeb), expected at `../DispatchWeb`. It is a build-time input only; installed packages bundle its output under `vendor/web-ui/`.
 
 ## Setup
 
@@ -70,13 +70,13 @@ Two `overrides` in `package.json` address upstream advisories (Next.js 16.3.3 fo
 
 The release artifact is `@michaelt025/dispatch`, generated under `.release/package` — never the checkout root, which stays `private: true` so `npm publish` from the root is refused. The full contract (isolation, setup, updates, package contents) is in [RELEASE_PACKAGE.md](RELEASE_PACKAGE.md); [RELEASE_README.md](RELEASE_README.md) is the README shipped inside the package.
 
-1. Merge and tag the web UI in `../PiAstra-web-ui`, then `npm ci && npm run build` there.
+1. Merge and tag the web UI in `../DispatchWeb`, then `npm ci && npm run build` there.
 2. Bump `version` in the root `package.json` and merge to `main`.
 3. From a clean `main`:
 
    ```sh
    npm ci
-   npm run build:release -- --web-dir ../PiAstra-web-ui
+   npm run build:release -- --web-dir ../DispatchWeb
    npm pack ./.release/package --pack-destination .release
    DISPATCH_TEST_TARBALL="$PWD/.release/michaelt025-dispatch-<version>.tgz" npm run test:package
    ```

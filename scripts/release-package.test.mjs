@@ -105,7 +105,7 @@ describe('buildRelease staging', () => {
       assert.ok(!('private' in manifest), 'staged manifest must be publishable');
       assert.equal(manifest.license, 'MIT');
       assert.deepEqual(manifest.publishConfig, { access: 'public' });
-      assert.equal(manifest.repository.url, 'git+https://github.com/MichaelT025/PiAstra.git');
+      assert.equal(manifest.repository.url, 'git+https://github.com/MichaelT025/Dispatch.git');
       assert.deepEqual(manifest.bin, { dispatch: 'bin/dispatch.mjs' });
       assert.deepEqual(manifest.scripts, { postinstall: 'node lib/install-notice.mjs' });
       assert.equal(manifest.type, 'module');

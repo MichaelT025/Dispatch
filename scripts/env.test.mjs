@@ -19,7 +19,7 @@ test('defaults when neither new nor legacy is set', () => {
   assert.equal(parseTrialPort({}), 30141);
   assert.equal(parseTauPort({}), 3001);
   assert.equal(resolveForkDir('/root', {}), resolve('/root', DEFAULT_FORK_SIBLING));
-  assert.equal(DEFAULT_FORK_SIBLING, join('..', 'PiAstra-web-ui'));
+  assert.equal(DEFAULT_FORK_SIBLING, join('..', 'DispatchWeb'));
 });
 
 test('legacy-only values are honored', () => {
