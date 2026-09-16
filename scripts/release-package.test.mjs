@@ -102,7 +102,10 @@ describe('buildRelease staging', () => {
       const manifest = JSON.parse(readFileSync(join(outDir, 'package.json'), 'utf8'));
       assert.equal(manifest.name, '@michaelt025/dispatch');
       assert.equal(manifest.version, '0.1.0');
-      assert.equal(manifest.private, true);
+      assert.ok(!('private' in manifest), 'staged manifest must be publishable');
+      assert.equal(manifest.license, 'MIT');
+      assert.deepEqual(manifest.publishConfig, { access: 'public' });
+      assert.equal(manifest.repository.url, 'git+https://github.com/MichaelT025/PiAstra.git');
       assert.deepEqual(manifest.bin, { dispatch: 'bin/dispatch.mjs' });
       assert.deepEqual(manifest.scripts, { postinstall: 'node lib/install-notice.mjs' });
       assert.equal(manifest.type, 'module');

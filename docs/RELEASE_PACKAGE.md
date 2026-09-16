@@ -1,6 +1,6 @@
 # Dispatch release package contract
 
-Implementation contract for `@michaelt025/dispatch`. Publishing remains disabled until separately approved. The npm account/scope `michaelt025` is confirmed; no npm tokens belong in the repository.
+Implementation contract for `@michaelt025/dispatch`, published to npm from the staged package under `.release/package`. The npm account/scope `michaelt025` is confirmed; no npm tokens belong in the repository.
 
 ## Phases
 
@@ -10,10 +10,7 @@ All three implementation phases are complete as of `af34c51`:
 - [x] Phase 2 — CLI/Web launcher and explicit authentication/setup wizard.
 - [x] Phase 3 — Startup update notices, explicit self-update, clean-install/upgrade verification, and release help/docs.
 
-Two release gates remain closed and are not implementation work:
-
-- **Publishing** — no npm publish has been performed; publication requires separate approval.
-- **User approval** — the artifact, version and release notes need explicit user sign-off.
+Both PRs (PiAstra #12, pi-web-ui #7) were manually tested and merged; publishing is approved. See [Publishing](#publishing) below.
 
 Original Dispatch code is licensed under MIT in the root `LICENSE`; retained
 third-party MIT licenses remain in place.
@@ -30,13 +27,25 @@ npm pack ./.release/package --pack-destination .release
 DISPATCH_TEST_TARBALL="$PWD/.release/michaelt025-dispatch-<version>.tgz" npm run test:package
 ```
 
-`npm run test:package` installs the packed tarball into an isolated prefix and exercises the real installed launcher, the packaged WebUI lifecycle, and a local-tarball upgrade that preserves user state. It is explicit and opt-in and never runs under root `npm test`. These steps make **no global install and perform no real authentication**; the package stays `private: true` until publication is separately approved.
+`npm run test:package` installs the packed tarball into an isolated prefix and exercises the real installed launcher, the packaged WebUI lifecycle, and a local-tarball upgrade that preserves user state. It is explicit and opt-in and never runs under root `npm test`. These steps make **no global install and perform no real authentication**.
+
+## Publishing
+
+The root `package.json` stays `private: true` so the checkout itself can never be published; only the staged package is publishable. It is generated without `private`, with `license: MIT`, `repository`, and `publishConfig.access: public` (required for a scoped package).
+
+1. Merge and tag the maintained WebUI checkout, then `npm ci && npm run build` there.
+2. Bump `version` in the root `package.json` (the staged manifest copies it) and merge.
+3. Build, pack and run `npm run test:package` as above from a clean `main`.
+4. `npm login`, then `npm publish ./.release/package` (dry run first with `--dry-run`).
+5. Tag `v<version>` and attach the `.tgz` to a GitHub release.
+
+After publishing, verify on a clean prefix: `npm install -g @michaelt025/dispatch`, `dispatch setup`, `dispatch`, `dispatch --web`. The startup notice and `dispatch update` can only be exercised once a second version is published.
 
 ## Package and runtime
 
 - Build a staging package at `.release/package` from this checkout and the maintained WebUI checkout (build-time input only). Copy runtime sources, all seven maintained extensions, role/config files, help/artwork, and upstream notices. Copy the built WebUI with its relative layout into `vendor/web-ui/`.
 - Its manifest exposes only `dispatch`. Pi 0.85.1 is a pinned normal dependency, shared with the WebUI. Production dependencies combine the extension runtime and WebUI dependencies; legacy upstream WebUI/Tau/agegr trials and development tooling are excluded.
-- Keep `private: true` in generated packages during development. Local npm pack/install works; publication is an explicit later gate. The root project does not yet declare a license for original code; preserve all existing third-party licenses and do not invent one.
+- The generated package is publishable (no `private`, `publishConfig.access: public`); the root checkout stays `private: true`. Original Dispatch code is MIT (root `LICENSE`); preserve all existing third-party licenses.
 - `dispatch setup` checks whether a plain `pi` executable exists. If absent, offer to install pinned Pi through npm (explicit interactive consent, never during package installation). If another Pi version exists, leave it untouched; Dispatch always uses its own pinned dependency. This avoids silently upgrading the user's plain Pi.
 - Existing legacy global Dispatch/PiAstra installations are not removed automatically. Users who previously ran the legacy installer must remove those old registrations themselves if they want their existing plain Pi configuration unbundled. New Dispatch installs do not register anything in `~/.pi/agent`.
 

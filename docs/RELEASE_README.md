@@ -6,11 +6,12 @@ Requires Node.js 22.19+ and Git (including Git Bash on Windows).
 
 ## Install and set up
 
-The package is **private and unpublished** while it is being tested: there is currently no published release, and `npm install -g @michaelt025/dispatch` becomes valid only after a separately approved publication. During development, install the supplied tarball with `npm install -g <path-to-dispatch.tgz>`.
-
 ```sh
+npm install -g @michaelt025/dispatch
 dispatch setup
 ```
+
+To try a development build instead, install a packed tarball with `npm install -g <path-to-dispatch.tgz>`.
 
 Setup is explicit: installation and ordinary launch never start authentication automatically. Setup checks for a plain `pi` command and offers to install supported Pi if absent; it never silently upgrades an existing Pi. Dispatch itself uses pinned Pi 0.85.1.
 
@@ -57,7 +58,7 @@ This updates the same npm installation, including its bundled WebUI/extensions, 
 - `DISPATCH_SKIP_VERSION_CHECK=1`: disable startup checks (explicit update remains available).
 - `DISPATCH_OFFLINE=1` or `PI_OFFLINE=1`: disable update network access. CLI `--offline` also disables Pi startup network operations.
 
-The package may be unpublished while testing a development tarball; in that case the startup check stays silent and explicit update reports that no published release is available.
+When running a development tarball whose version is newer than the published release, the startup check stays silent.
 
 ## Development tarball test
 
@@ -79,4 +80,4 @@ Plain Pi settings are not modified by the new launcher. Existing legacy PiAstra/
 
 To uninstall, remove the npm package with the same package manager and installation scope you used to install it. Your Dispatch state remains until you explicitly delete it. Keep it if you intend to reinstall.
 
-See `THIRD_PARTY_NOTICES.md`, the root MIT `LICENSE`, and each included upstream license for maintained-fork attribution. This development artifact remains **private and unpublished** until release approval; no published release is claimed.
+See `THIRD_PARTY_NOTICES.md`, the root MIT `LICENSE`, and each included upstream license for maintained-fork attribution. Releases are published to npm as `@michaelt025/dispatch`.

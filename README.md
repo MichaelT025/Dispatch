@@ -19,7 +19,7 @@ This repository produces two distinct things, documented separately below:
 - Launchers prefer `DISPATCH_PORT`, `DISPATCH_FORK_DIR`, `DISPATCH_FORK_PORT`, `DISPATCH_TRIAL_PORT` and `DISPATCH_TAU_PORT`, with the corresponding `PIASTRA_*` names as fallbacks. Empty values count as unset; invalid preferred values report an error instead of falling back.
 - GitHub repository names and the `../PiAstra-web-ui` sibling path remain unchanged. Dispatch Web retains its `pi-web-ui` executable/service names, `PI_WEB_*` configuration and browser storage keys.
 
-The npm scope `@michaelt025` is confirmed. Packages remain **unpublished/private during development**. The generated `@michaelt025/dispatch` package includes the CLI launcher, explicit setup, all seven maintained extensions, and built Dispatch Web. Pi is pinned to 0.85.1. Startup update notices and explicit `dispatch update` are implemented. Publication still requires separate approval; do not publish yet.
+The generated `@michaelt025/dispatch` package is published to npm and includes the CLI launcher, explicit setup, all seven maintained extensions, and built Dispatch Web. Pi is pinned to 0.85.1. Startup update notices and explicit `dispatch update` are implemented. The release procedure is in [docs/RELEASE_PACKAGE.md](docs/RELEASE_PACKAGE.md).
 
 ## Packaged Dispatch
 

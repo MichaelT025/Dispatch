@@ -328,6 +328,9 @@ export function buildRelease({ root = DEFAULT_ROOT, webRoot, outDir, buildWeb = 
     fail(`Source checkout missing required artifacts: ${missing.join(', ')}. Refusing to stage.`);
   }
   const rootManifest = readJson(join(r, 'package.json'));
+  // The checkout itself is never the publishable artifact; only the staged
+  // package under .release/ is. Keep the root private so `npm publish` from
+  // the repo root cannot ship the whole checkout.
   if (rootManifest.private !== true) fail('Refusing to stage: root package.json must keep private: true.');
   const rootSdkPin = rootManifest.dependencies?.[PI_RUNTIME_DEP];
   if (rootSdkPin !== PINNED_PI_VERSION) {
@@ -382,12 +385,18 @@ export function buildRelease({ root = DEFAULT_ROOT, webRoot, outDir, buildWeb = 
   const stagedManifest = {
     name: '@michaelt025/dispatch',
     version: rootManifest.version,
-    private: true,
-    type: 'module',
     description: rootManifest.description || 'Dispatch — Pi orchestration with Astra planning and milestone review',
+    license: 'MIT',
+    type: 'module',
+    keywords: ['pi', 'coding-agent', 'ai', 'orchestration', 'cli', 'web-ui', 'llm'],
+    repository: { type: 'git', url: 'git+https://github.com/MichaelT025/PiAstra.git' },
+    homepage: 'https://github.com/MichaelT025/PiAstra#readme',
+    bugs: { url: 'https://github.com/MichaelT025/PiAstra/issues' },
     engines: { node: '>=22.19.0' },
     bin: { dispatch: 'bin/dispatch.mjs' },
     scripts: { postinstall: 'node lib/install-notice.mjs' },
+    // Scoped packages default to restricted access on npm; the release is public.
+    publishConfig: { access: 'public' },
     dependencies,
   };
   if (Object.keys(stagedOverrides).length) stagedManifest.overrides = stagedOverrides;
