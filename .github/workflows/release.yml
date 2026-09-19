@@ -1,0 +1,158 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build and test release tarball
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - name: Check out Dispatch tag
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+
+      - name: Read pinned web SHA
+        id: metadata
+        run: |
+          SHA="$(node -e "console.log(JSON.parse(require('fs').readFileSync('config/release.json','utf8')).web.sha)")"
+          REPO="$(node -e "console.log(JSON.parse(require('fs').readFileSync('config/release.json','utf8')).web.repository)")"
+          echo "sha=${SHA}" >> "${GITHUB_OUTPUT}"
+          echo "repository=${REPO}" >> "${GITHUB_OUTPUT}"
+          echo "Pinned web checkout: ${REPO}@${SHA}"
+
+      - name: Check out DispatchWeb at pinned SHA
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          repository: ${{ steps.metadata.outputs.repository }}
+          ref: ${{ steps.metadata.outputs.sha }}
+          path: DispatchWeb
+          persist-credentials: false
+
+      - name: Verify web checkout SHA
+        run: |
+          ACTUAL="$(git -C DispatchWeb rev-parse HEAD)"
+          EXPECTED="${{ steps.metadata.outputs.sha }}"
+          if [ "${ACTUAL}" != "${EXPECTED}" ]; then
+            echo "Web checkout SHA mismatch: ${ACTUAL} != ${EXPECTED}" >&2
+            exit 1
+          fi
+          echo "Web checkout verified at ${ACTUAL}"
+
+      - name: Set up Node.js 24
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '24'
+          cache: npm
+
+      - name: Pin npm for OIDC trusted publishing
+        run: |
+          npm install -g npm@11.6.2
+          npm --version
+          node --version
+          node -e "const v=require('child_process').execSync('npm --version').toString().trim(); const [maj,min,patch]=v.split('.').map(Number); if (!(maj>11||(maj===11&&(min>5||(min===5&&patch>=1))))) { console.error('npm >=11.5.1 required for OIDC trusted publishing, got '+v); process.exit(1); }"
+
+      - name: Validate tag, versions, and release metadata
+        run: node scripts/release-metadata.mjs --validate --tag "${GITHUB_REF_NAME}"
+
+      - name: Install locked Dispatch dependencies
+        run: npm ci --no-audit --no-fund
+
+      - name: Install locked DispatchWeb dependencies
+        run: npm ci --no-audit --no-fund --prefix DispatchWeb
+
+      - name: Run offline tests
+        run: npm test
+
+      - name: Stage release package
+        run: npm run build:release -- --web-dir "${PWD}/DispatchWeb"
+
+      - name: Pack staged release
+        run: npm pack ./.release/package --pack-destination .release
+
+      - name: Run packaged tarball test
+        run: |
+          TARBALL="${PWD}/.release/michaelt025-dispatch-$(node -p "require('./package.json').version").tgz"
+          if [ ! -f "${TARBALL}" ]; then
+            echo "Expected tarball missing: ${TARBALL}" >&2
+            ls -l .release >&2
+            exit 1
+          fi
+          DISPATCH_TEST_TARBALL="${TARBALL}" npm run test:package
+
+      - name: Upload tested tarball
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-tarball
+          path: .release/michaelt025-dispatch-*.tgz
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: Publish to npm and attach GitHub release
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: build
+    environment: npm
+    permissions:
+      contents: write
+      id-token: write
+    steps:
+      - name: Check out Dispatch tag
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: Download tested tarball
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-tarball
+          path: .release
+
+      - name: Set up Node.js 24 with npm OIDC
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '24'
+          registry-url: https://registry.npmjs.org
+          cache: npm
+
+      - name: Pin npm for OIDC trusted publishing
+        run: |
+          npm install -g npm@11.6.2
+          npm --version
+          node --version
+
+      - name: Validate tag against downloaded tarball
+        run: |
+          node scripts/release-metadata.mjs --validate --tag "${GITHUB_REF_NAME}"
+          TARBALL=".release/michaelt025-dispatch-$(node -p "require('./package.json').version").tgz"
+          if [ ! -f "${TARBALL}" ]; then
+            echo "Tested tarball missing: ${TARBALL}" >&2
+            ls -l .release >&2
+            exit 1
+          fi
+          echo "TARBALL=${TARBALL}" >> "${GITHUB_ENV}"
+
+      - name: Publish exact tested tarball via npm OIDC
+        run: npm publish "${TARBALL}"
+
+      - name: Attach tarball to GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
+            gh release upload "${GITHUB_REF_NAME}" "${TARBALL}" --clobber
+          else
+            gh release create "${GITHUB_REF_NAME}" "${TARBALL}" --generate-notes
+          fi

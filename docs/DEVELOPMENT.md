@@ -70,6 +70,46 @@ Two `overrides` in `package.json` address upstream advisories (Next.js 16.3.3 fo
 
 The release artifact is `@michaelt025/dispatch`, generated under `.release/package` — never the checkout root, which stays `private: true` so `npm publish` from the root is refused. The full contract (isolation, setup, updates, package contents) is in [RELEASE_PACKAGE.md](RELEASE_PACKAGE.md); [RELEASE_README.md](RELEASE_README.md) is the README shipped inside the package.
 
+### Automated release (tag push, no manual publishing)
+
+Pushing a `v*` tag runs [`.github/workflows/release.yml`](../.github/workflows/release.yml). No manual `npm publish`, push of build output, or version bump from CI is needed: the tag itself selects the version, and the workflow publishes the exact tarball it tested.
+
+What it does:
+
+- Checks out this tag plus public `MichaelT025/DispatchWeb` at the immutable SHA pinned in [`config/release.json`](../config/release.json). No token is required for the public web checkout.
+- Validates (`scripts/release-metadata.mjs`) that the tag is exactly `v` + the root `package.json` version, that `package-lock.json` agrees, that the version is stable semver (prereleases are rejected for now so `latest` never accidentally becomes a prerelease), and that the web SHA is a full 40-hex commit.
+- Installs both locked dependency trees (`npm ci` here and in the web checkout), runs `npm test`, stages with `npm run build:release -- --web-dir <checked-out web>`, packs with `npm pack`, and runs `npm run test:package` against the absolute tarball path.
+- Transfers the exact tested `.tgz` between jobs as an artifact, then publishes that same file with npm OIDC trusted publishing (Node 24, npm 11.6.2, which satisfies the npm `>=11.5.1` OIDC requirement). After npm succeeds, it attaches the `.tgz` to a GitHub release with the `gh` CLI.
+
+Safety properties: GitHub-hosted `ubuntu-latest`; top-level `contents: read`; the build/test job is read-only (`contents: read`); only the publish job has `environment: npm` with `id-token: write` plus `contents: write` (needed for OIDC minting and the GitHub release). Concurrency is `release-${{ github.ref }}` with `cancel-in-progress: false` so a release is never cancelled midway. All GitHub actions are pinned to verified commit SHAs (checkout v4.3.1, setup-node v4.4.0, upload-artifact v4.6.2, download-artifact v4.3.0).
+
+One-time npm setup (package owner): register npm trusted publishing for exact values owner `MichaelT025`, repository `Dispatch`, workflow `release.yml`, environment `npm`. In the publisher's **Allowed actions**, explicitly enable **npm publish** (the staged-publication default is insufficient). Create the matching GitHub `npm` environment under repository Settings → Environments (no secrets needed); optionally require approval and restrict deployment tags to `v*`. Keep the `latest` dist-tag behaviour default; prerelease versions stay rejected until a prerelease channel is designed.
+
+To cut a release:
+
+1. Verify the web pin: `git ls-remote https://github.com/MichaelT025/DispatchWeb.git HEAD` and commit that SHA into `config/release.json` if the web UI moved. The web checkout must already be merged and built by the workflow (`npm ci` there, no prebuilt sibling needed locally).
+2. Run `npm version <version> --no-git-tag-version`, commit both `package.json` and `package-lock.json`, and merge to `main`. `npm ci` does not update the lockfile.
+3. From clean `main` at that commit: `git tag v<version> && git push origin v<version>`. The workflow runs from that tag.
+
+First-publication bootstrap: npm trusted publishers are configured in an **existing package's settings**. If `@michaelt025/dispatch` does not exist yet, use the manual fallback below to publish the tested tarball with `npm login` authentication first, keeping the Release workflow disabled during the bootstrap tag push. Then register the trusted publisher and re-enable the workflow. Use a **new version** for the first automated release; never re-tag or republish the bootstrap version.
+
+Rerun caveat: npm versions are immutable. If the workflow fails after `npm publish` succeeded (for example the GitHub release step), do not re-run the same tag expecting a second publish — it will fail with a version-taken error. Download the original tested artifact and attach it manually (replace placeholders):
+
+```sh
+gh run download <run-id> --name release-tarball --dir .release/recovery
+gh release create v<version> .release/recovery/michaelt025-dispatch-<version>.tgz --generate-notes
+# If the GitHub release already exists, use this instead:
+gh release upload v<version> .release/recovery/michaelt025-dispatch-<version>.tgz --clobber
+```
+
+Do not rerun the publish job or move the tag. If the published files were wrong, bump to a new patch version and tag again.
+
+Changing pins: update the web SHA in `config/release.json` (verify with `git ls-remote` first), or the action SHAs at the top of `release.yml` (verify each against `git ls-remote https://github.com/<owner>/<repo>.git refs/tags/<tag>`). `scripts/release-metadata.mjs` and its tests (`scripts/release-metadata.test.mjs`, run under `npm test`) cover the metadata rules; update them together if the policy changes.
+
+### Manual release fallback (preserved)
+
+Disable automation first with `gh workflow disable release.yml` (or Actions → Release → Disable workflow). Otherwise the manual tag push triggers a duplicate npm publication. Re-enable with `gh workflow enable release.yml` **after** the manual publication and tag push have finished.
+
 1. Merge and tag the web UI in `../DispatchWeb`, then `npm ci && npm run build` there.
 2. Bump `version` in the root `package.json` and merge to `main`.
 3. From a clean `main`:
@@ -86,8 +126,9 @@ The release artifact is `@michaelt025/dispatch`, generated under `.release/packa
 4. Publish and tag:
 
    ```sh
-   npm publish ./.release/package --dry-run   # inspect first
-   npm publish ./.release/package
+   npm login
+   npm publish .release/michaelt025-dispatch-<version>.tgz --dry-run
+   npm publish .release/michaelt025-dispatch-<version>.tgz
    git tag v<version> && git push --tags
    gh release create v<version> .release/michaelt025-dispatch-<version>.tgz --generate-notes
    ```

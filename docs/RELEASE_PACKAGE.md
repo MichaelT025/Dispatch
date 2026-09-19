@@ -33,10 +33,18 @@ DISPATCH_TEST_TARBALL="$PWD/.release/michaelt025-dispatch-<version>.tgz" npm run
 
 The root `package.json` stays `private: true` so the checkout itself can never be published; only the staged package is publishable. It is generated without `private`, with `license: MIT`, `repository`, and `publishConfig.access: public` (required for a scoped package).
 
+### Automated publishing (preferred)
+
+Push a `v<version>` tag; [`.github/workflows/release.yml`](../.github/workflows/release.yml) builds, tests, packs, re-tests, and publishes the exact tested tarball via npm OIDC trusted publishing (environment `npm`), then attaches the `.tgz` to a GitHub release. The web input is the immutable SHA in [`config/release.json`](../config/release.json); tag/version/lockfile/SHA rules are enforced by `scripts/release-metadata.mjs` (tested by `scripts/release-metadata.test.mjs`). Full setup, tag, bootstrap, and rerun notes are in [DEVELOPMENT.md](DEVELOPMENT.md#automated-release-tag-push-no-manual-publishing).
+
+### Manual publishing (fallback, preserved)
+
+Disable Release first (`gh workflow disable release.yml`) to prevent the manual tag push from triggering a duplicate npm publish. Re-enable it (`gh workflow enable release.yml`) after publication and tag push finish. This also applies to first-publication bootstrap; see the setup and recovery instructions in [DEVELOPMENT.md](DEVELOPMENT.md#automated-release-tag-push-no-manual-publishing).
+
 1. Merge and tag the maintained WebUI checkout, then `npm ci && npm run build` there.
-2. Bump `version` in the root `package.json` (the staged manifest copies it) and merge.
+2. Run `npm version <version> --no-git-tag-version`, commit both package manifests, and merge.
 3. Build, pack and run `npm run test:package` as above from a clean `main`.
-4. `npm login`, then `npm publish ./.release/package` (dry run first with `--dry-run`).
+4. `npm login`, then `npm publish .release/michaelt025-dispatch-<version>.tgz` using the exact tested tarball (dry run first with `--dry-run`).
 5. Tag `v<version>` and attach the `.tgz` to a GitHub release.
 
 After publishing, verify on a clean prefix: `npm install -g @michaelt025/dispatch`, `dispatch setup`, `dispatch`, `dispatch --web`. The startup notice and `dispatch update` can only be exercised once a second version is published.

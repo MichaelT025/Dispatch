@@ -1,0 +1,7 @@
+{
+  "$comment": "Release automation pins. The web SHA is an immutable full commit hash in public MichaelT025/DispatchWeb. Update it by verifying the remote HEAD (git ls-remote https://github.com/MichaelT025/DispatchWeb.git HEAD) and committing the new SHA here before tagging.",
+  "web": {
+    "repository": "MichaelT025/DispatchWeb",
+    "sha": "35030893d78386b578364ce72d8f5e7c1054c9e4"
+  }
+}
