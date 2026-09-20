@@ -278,6 +278,13 @@ Shared session notes: use list_notes/read_note to reuse earlier findings. ${acce
     record.resolve = undefined;
     record.done = undefined;
   };
+  const abortable = <T,>(promise: Promise<T> | T, signal: AbortSignal) => new Promise<T>((resolve, reject) => {
+    const onAbort = () => reject(signal.reason instanceof Error ? signal.reason : new Error('Aborted.'));
+    if (signal.aborted) return onAbort();
+    signal.addEventListener('abort', onAbort, { once: true });
+    Promise.resolve(promise).then(value => { signal.removeEventListener('abort', onAbort); resolve(value); },
+      error => { signal.removeEventListener('abort', onAbort); reject(error); });
+  });
   const armDone = (record: any) => { record.done = new Promise(resolve => { record.resolve = resolve; }); };
 
   // Run one prompt on a worker. A fresh worker creates its session first; a
@@ -298,8 +305,8 @@ Shared session notes: use list_notes/read_note to reuse earlier findings. ${acce
       const agentDir = getAgentDir();
       runtime ??= ModelRuntime.create({ authPath: path.join(agentDir, 'auth.json'), modelsPath: path.join(agentDir, 'models.json'), modelsStorePath: path.join(agentDir, 'models-store.json'), allowModelNetwork: true });
       let models: ModelRuntime;
-      try { models = await runtime; } catch (error) { runtime = undefined; throw error; }
-      cancel.throwIfAborted();
+      // Runtime initialization can hang; a cancel must not wait for it.
+      try { models = await abortable(runtime, cancel); } catch (error) { if (!cancel.aborted) runtime = undefined; throw error; }
       let session: any = record.session;
       if (!session) {
         const slash = selected.model.indexOf('/');
@@ -370,6 +377,32 @@ Shared session notes: use list_notes/read_note to reuse earlier findings. ${acce
   pi.on('session_shutdown', async () => { disposeAll(); });
   pi.on('agent_start', (_event, ctx) => { rememberCtx(ctx); });
   pi.on('agent_settled', (_event, ctx) => { rememberCtx(ctx); });
+  // /cancel <id> | all | (none: pick from running workers). Same cancel path
+  // as cancel_worker and the viewer's `x`, without spending an orchestrator turn.
+  pi.registerCommand('cancel', {
+    description: 'Cancel a running Dispatch worker: /cancel <id>, /cancel all, or pick one',
+    handler: async (args, ctx) => {
+      const wanted = args.trim().toLowerCase();
+      const running = activeRecords();
+      if (!running.length) { ctx.ui.notify('No running workers.', 'info'); return; }
+      let targets: any[];
+      if (wanted === 'all') targets = running;
+      else if (wanted) {
+        const id = wanted.replace(/^#/, '');
+        const record = workerViews.get(Number(id));
+        if (!record) { ctx.ui.notify(`Unknown worker #${id}. Running: ${running.map(r => `#${r.worker.id}`).join(', ')}.`, 'warning'); return; }
+        if (!isActive(record)) { ctx.ui.notify(`Worker #${record.worker.id} is not running (${record.worker.status}).`, 'info'); return; }
+        targets = [record];
+      } else if (ctx.hasUI) {
+        const labels = running.map(r => `#${r.worker.id} ${r.worker.role} · ${String(r.worker.task).replace(/\s+/g, ' ').slice(0, 60)}`);
+        const choice = await ctx.ui.select('Cancel worker', [...labels, 'all']);
+        if (!choice) return;
+        targets = choice === 'all' ? running : [running[labels.indexOf(choice)]];
+      } else { ctx.ui.notify(`Running: ${running.map(r => `#${r.worker.id}`).join(', ')}. Use /cancel <id> or /cancel all.`, 'info'); return; }
+      for (const record of targets) record.cancel?.();
+      ctx.ui.notify(`Cancelling ${targets.map(r => `#${r.worker.id}`).join(', ')}.`, 'info');
+    },
+  });
   pi.registerMessageRenderer?.(WORKER_RESULT_TYPE, (message: any, options: any, theme: any) =>
     createWorkerResultCard(message, options, theme));
 

@@ -207,6 +207,7 @@ Keys while a worker is open:
 | `p` | Switch scroll focus between prompt and output panes (output focused by default) |
 | `PgUp`/`PgDn`, `j`/`k`, `Home`/`End` | Page/line/edge scrolling for the focused pane; `End` re-enables output follow |
 | `Ctrl+O` | Toggle transcript tool expansion |
+| `x` (twice) | Cancel the open worker; in the picker, the highlighted one |
 | `Esc`/`Ctrl+C` | Close the viewer |
 
 ## Files

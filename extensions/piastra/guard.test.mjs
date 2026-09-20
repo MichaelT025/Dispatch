@@ -408,6 +408,65 @@ test('an aborted delegate call starts nothing; cancel_worker stops a starting wo
   }
 });
 
+test('/cancel stops workers by id, all, or a picker without spending a turn; bad ids and idle states notify', async () => {
+  const extension = await import(pathToFileURL(join(root, 'extensions', 'piastra', 'index.ts')).href);
+  const events = fakeEvents();
+  const pi = fakePi(events);
+  const commands = new Map();
+  pi.registerCommand = (name, definition) => { commands.set(name, definition); };
+  extension.default(pi);
+  const delegate = pi.tools.find((tool) => tool.name === 'delegate');
+  const cancel = commands.get('cancel');
+  assert.ok(cancel, '/cancel is registered');
+  assert.match(cancel.description, /\/cancel <id>/);
+  const notices = [];
+  let pick;
+  const ctx = { cwd: root, hasUI: true, sessionManager: { getSessionId: () => 'guard-slash-cancel' }, isProjectTrusted: () => true, isIdle: () => true,
+    ui: { notify: (message, level) => notices.push({ message, level }), select: async () => pick } };
+
+  await cancel.handler('', ctx);
+  assert.deepEqual(notices.at(-1), { message: 'No running workers.', level: 'info' });
+
+  const originalCreate = ModelRuntime.create;
+  ModelRuntime.create = () => new Promise((_resolve, reject) => setTimeout(() => reject(new Error('fixture: never used')), 5000));
+  try {
+    await delegate.execute('call-hang', { tasks: [
+      { role: 'fast', access: 'read', task: 'Inspect a file' },
+      { role: 'general', access: 'write', task: 'Edit a file' },
+      { role: 'fast', access: 'read', task: 'Read the docs' },
+    ] }, undefined, undefined, ctx);
+    await cancel.handler('#9', ctx);
+    assert.match(notices.at(-1).message, /Unknown worker #9\. Running: #1, #2, #3\./);
+    assert.equal(notices.at(-1).level, 'warning');
+
+    await cancel.handler('1', ctx);
+    assert.match(notices.at(-1).message, /Cancelling #1\./);
+    await untilSent(pi, 1);
+    assert.match(pi.messages[0].message.content, /#1 fast · .* · CANCELLED/);
+    await cancel.handler('1', ctx);
+    assert.match(notices.at(-1).message, /not running \(cancelled\)/);
+
+    // Bare /cancel picks from running workers only.
+    pick = undefined;
+    await cancel.handler('', ctx);
+    assert.ok(!/Cancelling/.test(notices.at(-1).message), 'dismissing the picker cancels nothing');
+    pick = '#2 general · Edit a file';
+    await cancel.handler('', ctx);
+    assert.match(notices.at(-1).message, /Cancelling #2\./);
+    await untilSent(pi, 2);
+
+    await cancel.handler('all', ctx);
+    assert.match(notices.at(-1).message, /Cancelling #3\./);
+    await untilSent(pi, 3);
+    const query = { type: 'query', busy: false, active: 0 };
+    events.emit(PIASTRA_WORKER_GUARD_CHANNEL, query);
+    assert.equal(query.active, 0);
+  } finally {
+    ModelRuntime.create = originalCreate;
+    for (const handler of pi.handlers.get('session_shutdown') || []) await handler({}, ctx);
+  }
+});
+
 test('the PiAstra extension registers the guard handshake and session_before_switch guard', async () => {
   const extension = await import(pathToFileURL(join(root, 'extensions', 'piastra', 'index.ts')).href);
   assert.equal(typeof extension.default, 'function');
