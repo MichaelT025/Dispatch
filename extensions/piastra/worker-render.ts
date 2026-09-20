@@ -131,3 +131,36 @@ export function createWorkerProgress(workers: any[], _expanded: boolean, theme: 
     }
   };
 }
+
+// Transcript card for a `dispatch-worker-result` message: one status line per
+// worker; expanded (Ctrl+O) adds each worker's result as Markdown. The model
+// sees the full text either way; this only controls the terminal view.
+export function createWorkerResultCard(message: any, options: { expanded?: boolean } = {}, theme: any) {
+  const details = message?.details || {};
+  const results: any[] = Array.isArray(details.results) ? details.results : [];
+  const workers: any[] = Array.isArray(details.workers) ? details.workers : [];
+  const byId = new Map(workers.map(worker => [worker?.id, worker]));
+  const rows = results.map(result => {
+    const worker = byId.get(result?.id) || {};
+    const status = safe(result?.status || worker.status || 'unknown');
+    const glyph = status === 'completed' ? '✓' : ['failed', 'cancelled', 'interrupted'].includes(status) ? '✗' : '·';
+    const elapsed = result?.elapsed ? ` · ${safe(result.elapsed)}` : '';
+    return { line: `${glyph} #${safe(result?.id)} ${safe(result?.role || worker.role || 'worker')} · ${status}${elapsed}`, style: statusStyle(status), text: result?.text };
+  });
+  return {
+    invalidate() {},
+    render(width: number) {
+      const lines: string[] = [truncateToWidth(theme.fg('toolTitle', `Worker results · ${rows.length || 'none'}`), width)];
+      for (const row of rows) {
+        lines.push(truncateToWidth(theme.fg(row.style, row.line), width));
+        if (options.expanded && row.text) lines.push(...markdownLines(row.text, width));
+        else if (row.text) {
+          const first = safe(row.text).replace(/\s+/g, ' ').trim().slice(0, 200);
+          if (first) lines.push(truncateToWidth(theme.fg('dim', `  ${first}${first.length < safe(row.text).trim().length ? '…' : ''}`), width));
+        }
+      }
+      if (!options.expanded && rows.some(row => row.text)) lines.push(truncateToWidth(theme.fg('dim', 'Ctrl+O to expand'), width));
+      return lines;
+    }
+  };
+}

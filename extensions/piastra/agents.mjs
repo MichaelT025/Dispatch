@@ -1,4 +1,5 @@
 import { validateRoleEntry } from './prefs.mjs';
+import { WORKER_TOOL_NAMES } from './worker-runtime.mjs';
 
 export const agentOrder = ['orchestrator', 'general', 'fast', 'review'];
 // Review has constrained check execution, not a filesystem sandbox: trusted
@@ -21,7 +22,7 @@ export function workerTools(access) {
  */
 export function agentTools(role) {
   if (role === 'review') return [...readTools];
-  if (role === 'orchestrator') return [...readTools, ...writeTools, 'delegate'];
+  if (role === 'orchestrator') return [...readTools, ...writeTools, ...WORKER_TOOL_NAMES];
   return [...readTools, ...writeTools];
 }
 

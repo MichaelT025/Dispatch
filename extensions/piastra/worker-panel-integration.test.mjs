@@ -19,21 +19,17 @@ import { WIDGET_KEY } from './worker-panel.ts';
 //
 // No provider calls: `ModelRuntime.create` is patched with offline fixtures.
 //  - unavailable-model fixture: runtime resolves, `getModel` returns undefined,
-//    so each REAL per-worker try/catch/finally path in index.ts finalizes its
-//    worker as `failed` and the REAL final model-facing result map
-//    (`completed.map(...)`) produces the delegate tool result.
+//    so each REAL per-worker path in index.ts finalizes its worker as `failed`
+//    and delivers the result through pi.sendMessage (captured on the fake pi).
 //  - hung-runtime fixture: `ModelRuntime.create` rejects after a delay, so the
-//    batch stays `starting` (spinner ticking) until the rejection hits the
-//    outer catch / finalizeOutstandingWorkers path.
+//    worker stays `starting` (spinner ticking) until the rejection lands.
 //
-// Coverage statement: a fully successful worker (`ok: true`, r.text) requires
-// a real provider session, which these tests must not make. The success
-// formatting expression is the same `completed.map(...)` path exercised here
-// with `ok: false` payloads, the completed-row panel rendering is covered by
-// the direct renderer payload comparison in the final test plus the unit
-// tests in worker-panel.test.mjs. Everything else (widget mount/lifecycle,
-// addCall whitelisting, restored-history exclusion, run retain/clear, reset,
-// shutdown) is exercised through the real extension code.
+// Delegation is asynchronous: `delegate` returns an acknowledgement as soon as
+// its workers are registered, and the panel run stays open while any worker
+// is active, even after the agent turn settles. A successful worker requires
+// a real provider session, which these tests must not make; the completed-row
+// panel rendering is covered by the direct renderer payload comparison in the
+// final test plus the unit tests in worker-panel.test.mjs.
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 
@@ -85,7 +81,20 @@ function fakePi(events) {
     setModel: async () => true,
     setThinkingLevel: () => {},
     setActiveTools: () => {},
+    messages: [],
+    sendMessage(message, options) { this.messages.push({ message, options }); },
+    registerMessageRenderer: () => {},
   };
+}
+
+// Wait until the extension has delivered `count` worker result messages.
+async function untilSent(pi, count = 1, timeout = 3000) {
+  const started = Date.now();
+  while (pi.messages.length < count) {
+    if (Date.now() - started > timeout) throw new Error(`Expected ${count} worker result messages, got ${pi.messages.length}.`);
+    await sleep(20);
+  }
+  return pi.messages;
 }
 
 // TUI-style ExtensionContext mock: records every setWidget call and keeps the
@@ -164,38 +173,41 @@ async function withRuntimePatch(fixture, run) {
   }
 }
 
-test('delegate wiring: widget mounts aboveEditor during onUpdate, holds failed rows, result content preserved; agent_settled retains then next agent_start clears', async () => {
+test('delegate wiring: widget mounts aboveEditor before delegate returns, failed results arrive as one message, agent_settled retains then next agent_start clears', async () => {
   const { pi, delegate, ctx, widgetCalls, widgetText, renderWidget } = await bootstrap();
   await fire(pi, 'session_start', {}, ctx);
   await fire(pi, 'agent_start', {}, ctx);
 
-  const updates = [];
-  const batch = await withRuntimePatch(unavailableModelRuntime, async () =>
-    delegate.execute('call-1', {
+  const batch = await withRuntimePatch(unavailableModelRuntime, async () => {
+    const ack = await delegate.execute('call-1', {
       tasks: [
         { role: 'general', access: 'write', task: 'PANEL-TASK-A fix the widget' },
         { role: 'fast', access: 'read', task: 'PANEL-TASK-B scan the docs' },
       ],
-    }, undefined, (update) => updates.push(update), ctx));
+    }, undefined, () => {}, ctx);
+    await untilSent(pi, 1);
+    return ack;
+  });
 
-  // The first publish (initial + addCall) happens synchronously inside
-  // execute; the widget must already be mounted by the first onUpdate.
-  assert.ok(updates.length >= 2, `expected initial and final onUpdate, got ${updates.length}`);
+  // The first publish (addCall) happens synchronously inside execute: the
+  // widget is mounted before the acknowledgement returns.
   assert.equal(widgetCalls.length, 1, 'widget must mount exactly once for the run');
   assert.equal(widgetCalls[0].key, WIDGET_KEY);
   assert.equal(widgetCalls[0].options?.placement, 'aboveEditor');
   assert.equal(typeof widgetCalls[0].content, 'function');
 
-  // Real model-facing delegate result: the completed.map(...) formatting over
-  // per-worker results (FAILED variant of the success path; see header).
-  const resultText = batch.content.map((part) => part.text).join('\n');
-  assert.match(resultText, /general · opencode-go\/glm-5\.3-flash · FAILED/);
+  // The tool result acknowledges the start; the model-facing worker results
+  // travel in the dispatch-worker-result message (FAILED variant; see header).
+  const ackText = batch.content.map((part) => part.text).join('\n');
+  assert.match(ackText, /Started 2 workers/);
+  assert.deepEqual(batch.details.workers.map((worker) => worker.status), ['starting', 'starting']);
+  const resultText = pi.messages[0].message.content;
+  assert.match(resultText, /#1 general · opencode-go\/glm-5\.3-flash · FAILED/);
   assert.match(resultText, /Unavailable model opencode-go\/glm-5\.3-flash; no fallback used\./);
-  assert.match(resultText, /fast · opencode-go\/deepseek-v4\.1-flash · FAILED/);
+  assert.match(resultText, /#2 fast · opencode-go\/deepseek-v4\.1-flash · FAILED/);
   assert.match(resultText, /Transcript: \(none\)/);
-  assert.deepEqual(batch.details.workers.map((worker) => worker.status), ['failed', 'failed']);
-  const finalUpdate = updates.at(-1);
-  assert.deepEqual(finalUpdate.details.workers.map((worker) => worker.status), ['failed', 'failed']);
+  assert.deepEqual(pi.messages[0].message.details.workers.map((worker) => worker.status), ['failed', 'failed']);
+  assert.deepEqual(pi.messages[0].options, { triggerTurn: true, deliverAs: 'steer' });
 
   // Widget layout: heading counts, role names, status glyphs, timers — and
   // nothing else: no task text, no model, no activity, no transcript.
@@ -221,41 +233,48 @@ test('delegate wiring: widget mounts aboveEditor during onUpdate, holds failed r
   assert.deepEqual(renderWidget(), []);
 });
 
-test('agent_settled with ctx.isIdle() freezes still-active rows to interrupted; a busy ctx does not end the run', async () => {
+test('agent_settled with ctx.isIdle() keeps the run open while a worker is still active; it ends once the last worker lands', async () => {
   const { pi, delegate, ctx, widgetCalls, renders, widgetText } = await bootstrap();
   await fire(pi, 'session_start', {}, ctx);
   await fire(pi, 'agent_start', {}, ctx);
 
-  const updates = [];
-  const controller = new AbortController();
-  const hung = withRuntimePatch(hungRuntime, () =>
-    delegate.execute('call-hang', { tasks: [{ role: 'general', access: 'read', task: 'PANEL-TASK-HANG' }] },
-      controller.signal, (update) => updates.push(update), ctx));
-  hung.catch(() => { /* handled by assert.rejects in finally */ });
+  await withRuntimePatch(hungRuntime, async () => {
+    const ack = await delegate.execute('call-hang', { tasks: [{ role: 'general', access: 'read', task: 'PANEL-TASK-HANG' }] },
+      undefined, () => {}, ctx);
+    assert.match(ack.content[0].text, /Started 1 worker;/);
 
-  try {
     await sleep(120);
     const rendersEarly = renders.count;
-    await sleep(650);
+    await sleep(400);
     // The 250ms worker ticker must be publishing/spinning while the worker is
     // starting (this is the only spinner driver; the panel owns no timer).
     assert.ok(renders.count > rendersEarly, '250ms ticker did not drive repaints while a worker was starting');
     assert.match(widgetText(), /[├└]─ [⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] general \d+s/);
     assert.match(widgetText(), /● Subagents \(0\/1\)/);
 
-    // ctx.isIdle() true → endRun via the real agent_settled handler.
+    // The orchestrator's turn ends while the worker is still running: the run
+    // must stay open (no interrupted marker, spinner still ticking).
+    await fire(pi, 'agent_settled', {}, ctx);
+    const openText = widgetText();
+    assert.match(openText, /● Subagents \(0\/1\)/, 'a settled turn must not close a run with live workers');
+    assert.ok(!openText.includes('⏹'), 'a live worker must not be marked interrupted by agent_settled');
+    const before = renders.count;
+    await sleep(300);
+    assert.ok(renders.count > before, 'spinner must keep ticking after the turn settled');
+
+    // The hung runtime rejects: the worker fails, its result is delivered, and
+    // only now does agent_settled end the run (rows retained, timer stopped).
+    await untilSent(pi, 1);
+    assert.match(pi.messages[0].message.content, new RegExp(hungRuntimeError));
     await fire(pi, 'agent_settled', {}, ctx);
     const frozenText = widgetText();
     assert.match(frozenText, /○ Subagents \(1\/1\)/);
-    assert.match(frozenText, /⏹ general \d+s/, 'still-active row must be marked interrupted by endRun');
+    assert.match(frozenText, /✗ general \d+s/);
     const frozenRenders = renders.count;
     await sleep(600);
     assert.equal(renders.count, frozenRenders, 'frozen panel must stop repainting after endRun');
     assert.equal(widgetText(), frozenText);
-  } finally {
-    controller.abort(new Error('test cleanup'));
-    await assert.rejects(hung, new RegExp(hungRuntimeError), 'hung runtime fixture must surface its rejection');
-  }
+  });
 
   // Next agent_start clears the retained rows.
   await fire(pi, 'agent_start', {}, ctx);
@@ -276,12 +295,9 @@ test('agent_settled while ctx is busy keeps the run open (spinner keeps spinning
   await fire(pi, 'agent_start', {}, ctx);
 
   const busyCtx = { ...ctx, isIdle: () => false };
-  const controller = new AbortController();
-  const hung = withRuntimePatch(hungRuntime, () =>
-    delegate.execute('call-hang-busy', { tasks: [{ role: 'fast', access: 'read', task: 'PANEL-TASK-BUSY' }] },
-      controller.signal, () => {}, busyCtx));
-  hung.catch(() => { /* handled by assert.rejects in finally */ });
-  try {
+  await withRuntimePatch(hungRuntime, async () => {
+    await delegate.execute('call-hang-busy', { tasks: [{ role: 'fast', access: 'read', task: 'PANEL-TASK-BUSY' }] },
+      undefined, () => {}, busyCtx);
     await sleep(600);
     await fire(pi, 'agent_settled', {}, busyCtx);
     const text = widgetText();
@@ -289,14 +305,12 @@ test('agent_settled while ctx is busy keeps the run open (spinner keeps spinning
     assert.match(text, /[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] fast \d+s/);
     assert.ok(!text.includes('⏹'), 'no interruption marker while the run is open');
     const before = renders.count;
-    await sleep(600);
+    await sleep(300);
     assert.ok(renders.count > before, 'spinner must keep ticking while the run is open');
-  } finally {
-    controller.abort(new Error('test cleanup'));
-    await assert.rejects(hung, new RegExp(hungRuntimeError));
-  }
-  // After the batch failure the worker is finalized to failed through the
-  // outer catch path (finalizeOutstandingWorkers), still visible in the panel.
+    await untilSent(pi, 1);
+  });
+  // After the runtime failure the worker is finalized to failed and stays
+  // visible in the panel.
   assert.match(widgetText(), /✗ fast \d+s/);
 });
 
@@ -327,32 +341,35 @@ test('multiple sequential and parallel delegate calls accumulate in one run; res
       delegate.execute('call-b', { tasks: [{ role: 'general', access: 'write', task: 'PANEL-TASK-B' }] }, undefined, () => {}, ctx),
     ]);
     assert.equal(parallel.length, 2);
+    await untilSent(pi, 1);
     assert.match(widgetText(), /Subagents \(2\/2\)/);
     await delegate.execute('call-c', { tasks: [{ role: 'fast', access: 'read', task: 'PANEL-TASK-C' }] }, undefined, () => {}, ctx);
+    await untilSent(pi, 2);
   });
 
   const text = widgetText();
   assert.match(text, /Subagents \(3\/3\)/);
   for (const role of ['review', 'general', 'fast']) assert.match(text, new RegExp(`✗ ${role} \\d+s`));
-  // Restored history (including the interrupted old worker) never leaks in.
+  // Restored history (including the interrupted old worker) never leaks in,
+  // and new ids continue after the restored ones.
+  assert.match(pi.messages[0].message.content, /#9[23] (review|general)/);
   assert.ok(!text.includes('legacy'), `restored history leaked into the panel:\n${text}`);
   assert.ok(!text.includes('⏹'), 'restored interrupted worker leaked into the panel');
   assert.ok(!text.includes('OLD-TASK'));
 });
 
-test('ModelRuntime.create rejection fixture: outer catch finalizes workers and the widget holds failed rows', async () => {
+test('ModelRuntime.create rejection fixture: the worker fails, its result is delivered and the widget holds the failed row', async () => {
   const { pi, delegate, ctx, widgetText } = await bootstrap();
   await fire(pi, 'session_start', {}, ctx);
   await fire(pi, 'agent_start', {}, ctx);
 
-  const updates = [];
-  await assert.rejects(
-    withRuntimePatch(async () => { throw new Error('fixture: runtime initialization rejected'); }, () =>
-      delegate.execute('call-reject', { tasks: [{ role: 'general', access: 'write', task: 'PANEL-TASK-REJECT' }] },
-        undefined, (update) => updates.push(update), ctx)),
-    /fixture: runtime initialization rejected/,
-  );
-  assert.deepEqual(updates.at(-1).details.workers.map((worker) => worker.status), ['failed']);
+  await withRuntimePatch(async () => { throw new Error('fixture: runtime initialization rejected'); }, async () => {
+    await delegate.execute('call-reject', { tasks: [{ role: 'general', access: 'write', task: 'PANEL-TASK-REJECT' }] },
+      undefined, () => {}, ctx);
+    await untilSent(pi, 1);
+  });
+  assert.match(pi.messages[0].message.content, /fixture: runtime initialization rejected/);
+  assert.deepEqual(pi.messages[0].message.details.workers.map((worker) => worker.status), ['failed']);
   const text = widgetText();
   assert.match(text, /Subagents \(1\/1\)/);
   assert.match(text, /✗ general \d+s/);
@@ -363,8 +380,10 @@ test('session_start and session_tree resets: no old row leakage into a new sessi
   const { pi, delegate, widgetText, renderWidget, widgetCalls, ctx } = await bootstrap();
   await fire(pi, 'session_start', {}, ctx);
   await fire(pi, 'agent_start', {}, ctx);
-  await withRuntimePatch(unavailableModelRuntime, () =>
-    delegate.execute('call-1', { tasks: [{ role: 'general', access: 'write', task: 'PANEL-TASK-1' }] }, undefined, () => {}, ctx));
+  await withRuntimePatch(unavailableModelRuntime, async () => {
+    await delegate.execute('call-1', { tasks: [{ role: 'general', access: 'write', task: 'PANEL-TASK-1' }] }, undefined, () => {}, ctx);
+    await untilSent(pi, 1);
+  });
   assert.match(widgetText(), /✗ general \d+s/);
 
   // New session (session_start) rebinds on a fresh ctx: old widget unmounted,
@@ -374,8 +393,10 @@ test('session_start and session_tree resets: no old row leakage into a new sessi
   assert.ok(widgetCalls.some((call) => call.key === WIDGET_KEY && call.content === undefined), 'session_start must unregister the old widget');
   assert.deepEqual(renderWidget(), []);
   await fire(pi, 'agent_start', {}, next.ctx);
-  await withRuntimePatch(unavailableModelRuntime, () =>
-    delegate.execute('call-2', { tasks: [{ role: 'fast', access: 'read', task: 'PANEL-TASK-2' }] }, undefined, () => {}, next.ctx));
+  await withRuntimePatch(unavailableModelRuntime, async () => {
+    await delegate.execute('call-2', { tasks: [{ role: 'fast', access: 'read', task: 'PANEL-TASK-2' }] }, undefined, () => {}, next.ctx);
+    await untilSent(pi, 2);
+  });
   const afterStart = next.widgetText();
   assert.match(afterStart, /Subagents \(1\/1\)/);
   assert.match(afterStart, /✗ fast \d+s/);
@@ -386,8 +407,10 @@ test('session_start and session_tree resets: no old row leakage into a new sessi
   await fire(pi, 'session_tree', {}, third.ctx);
   assert.ok(next.widgetCalls.some((call) => call.key === WIDGET_KEY && call.content === undefined), 'session_tree must unregister the previous widget');
   await fire(pi, 'agent_start', {}, third.ctx);
-  await withRuntimePatch(unavailableModelRuntime, () =>
-    delegate.execute('call-3', { tasks: [{ role: 'review', access: 'read', task: 'PANEL-TASK-3' }] }, undefined, () => {}, third.ctx));
+  await withRuntimePatch(unavailableModelRuntime, async () => {
+    await delegate.execute('call-3', { tasks: [{ role: 'review', access: 'read', task: 'PANEL-TASK-3' }] }, undefined, () => {}, third.ctx);
+    await untilSent(pi, 3);
+  });
   const afterTree = third.widgetText();
   assert.match(afterTree, /✗ review \d+s/);
   assert.ok(!/fast|general/.test(afterTree), 'old rows leaked across session_tree');
@@ -398,12 +421,13 @@ test('session_shutdown disposes: widget unregistered once, guard unsubscribed, n
   await fire(pi, 'session_start', {}, ctx);
   await fire(pi, 'agent_start', {}, ctx);
 
-  const updates = [];
-  await withRuntimePatch(unavailableModelRuntime, () =>
-    delegate.execute('call-1', { tasks: [{ role: 'general', access: 'write', task: 'PANEL-TASK-1' }] }, undefined, (update) => updates.push(update), ctx));
-  const updatesAfterRun = updates.length;
+  await withRuntimePatch(unavailableModelRuntime, async () => {
+    await delegate.execute('call-1', { tasks: [{ role: 'general', access: 'write', task: 'PANEL-TASK-1' }] }, undefined, () => {}, ctx);
+    await untilSent(pi, 1);
+  });
+  const rendersAfterRun = renders.count;
   await sleep(300);
-  assert.equal(updates.length, updatesAfterRun, '250ms ticker kept running after the delegate call settled');
+  assert.equal(renders.count, rendersAfterRun, '250ms ticker kept running after the last worker finished');
 
   await fire(pi, 'session_shutdown', {}, ctx);
   const unregisterCalls = widgetCalls.filter((call) => call.key === WIDGET_KEY && call.content === undefined);
@@ -417,13 +441,15 @@ test('session_shutdown disposes: widget unregistered once, guard unsubscribed, n
   // Post-shutdown activity must not resurrect the disposed panel.
   const rendersAtShutdown = renders.count;
   await fire(pi, 'agent_start', {}, ctx);
-  await withRuntimePatch(unavailableModelRuntime, () =>
-    delegate.execute('call-after-shutdown', { tasks: [{ role: 'general', access: 'write', task: 'PANEL-TASK-2' }] }, undefined, () => {}, ctx));
+  await withRuntimePatch(unavailableModelRuntime, async () => {
+    await delegate.execute('call-after-shutdown', { tasks: [{ role: 'general', access: 'write', task: 'PANEL-TASK-2' }] }, undefined, () => {}, ctx);
+    await sleep(500);
+  });
   assert.equal(widgetCalls.filter((call) => typeof call.content === 'function').length, 1, 'no widget mount after dispose');
   assert.equal(renders.count, rendersAtShutdown, 'no repaints requested after dispose');
-  const updatesAfterShutdown = updates.length;
-  await sleep(300);
-  assert.equal(updates.length, updatesAfterShutdown, 'a delegate ticker survived shutdown');
+  // The completion queue was disposed with the session: no result message
+  // is delivered into a session that has shut down.
+  assert.equal(pi.messages.length, 1, 'a worker result was delivered after shutdown');
 });
 
 test('/workers command, ctrl+shift+w shortcut and the delegate tool registration remain', async () => {
