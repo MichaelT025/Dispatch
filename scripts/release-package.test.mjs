@@ -47,6 +47,9 @@ function makeRoot() {
     'extensions/pi-atelier/LICENSE',
     'extensions/pi-todo/LICENSE',
   ]) write(lic, 'MIT fork\n');
+  write('extensions/pi-usage/LICENSE', 'Apache License 2.0\n');
+  write('extensions/pi-usage/adapter.mjs', 'export {};\n');
+  write('extensions/pi-usage/adapter.test.mjs', '// excluded\n');
   // Fixtures that must be excluded from the artifact.
   write('extensions/pi-queue/queue.test.mjs', '// test\n');
   write('extensions/pi-queue/__tests__/x.mjs', '// test\n');
@@ -99,6 +102,9 @@ describe('buildRelease staging', () => {
         run: () => { calls.push(true); return { status: 0 }; },
       });
       assert.equal(calls.length, 0);
+      assert.match(readFileSync(join(outDir, 'extensions/pi-usage/LICENSE'), 'utf8'), /Apache/);
+      assert.ok(existsSync(join(outDir, 'extensions/pi-usage/adapter.mjs')));
+      assert.ok(!existsSync(join(outDir, 'extensions/pi-usage/adapter.test.mjs')));
       const manifest = JSON.parse(readFileSync(join(outDir, 'package.json'), 'utf8'));
       assert.equal(manifest.name, '@michaelt025/dispatch');
       assert.equal(manifest.version, '0.1.0');

@@ -56,7 +56,7 @@ export const PI_RUNTIME_DEP = '@earendil-works/pi-coding-agent';
 /** Legacy/trial packages that must never enter the artifact. */
 export const EXCLUDED_DEPS = ['@agegr/pi-web', 'pi-web-ui', 'tau-mirror'];
 
-/** The seven maintained extension entry points, in established order. */
+/** The eight maintained extension entry points, in established order. */
 export const MANAGED_ENTRIES = [
   'extensions/piastra/index.ts',
   'extensions/pi-ui/index.ts',
@@ -65,6 +65,7 @@ export const MANAGED_ENTRIES = [
   'extensions/pi-compact-transcript/index.ts',
   'extensions/pi-atelier/extensions/index.ts',
   'extensions/pi-todo/index.ts',
+  'extensions/pi-usage/index.ts',
 ];
 
 /** Extension trees copied recursively (filtered, see runtimeFilter). */
@@ -76,6 +77,7 @@ export const MANAGED_TREES = [
   'extensions/pi-compact-transcript',
   'extensions/pi-atelier',
   'extensions/pi-todo',
+  'extensions/pi-usage',
 ];
 
 /** Maintained fork licenses that must exist and ship. */
@@ -85,6 +87,7 @@ export const FORK_LICENSES = [
   'extensions/pi-compact-transcript/LICENSE',
   'extensions/pi-atelier/LICENSE',
   'extensions/pi-todo/LICENSE',
+  'extensions/pi-usage/LICENSE',
 ];
 
 /** WebUI files preserved with their relative layout under vendor/web-ui/. */

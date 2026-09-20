@@ -130,6 +130,13 @@ const compactSource = path.join(root, 'extensions', 'pi-compact-transcript');
 const compactTarget = path.join(installed, 'extensions', 'pi-compact-transcript');
 const compactIndex = path.join(compactTarget, 'index.ts');
 await cp(compactSource, compactTarget, { recursive: true, force: true, filter: vendoredRuntimeFilter(compactSource) });
+// Vendor pi-usage as a self-contained extension. Its runtime tree includes
+// provider adapters, parsers, service, polling, UI, types, and license; tests
+// are excluded by the same filter used for the other vendored extensions.
+const usageSource = path.join(root, 'extensions', 'pi-usage');
+const usageTarget = path.join(installed, 'extensions', 'pi-usage');
+const usageIndex = path.join(usageTarget, 'index.ts');
+await cp(usageSource, usageTarget, { recursive: true, force: true, filter: vendoredRuntimeFilter(usageSource) });
 // Vendor the managed Atelier fork runtime files the same way: full npm layout
 // (extensions/index.ts, src/, assets/, LICENSE, README.md, package.json),
 // tests excluded. Copies happen here, before any settings.json mutation, so a
@@ -238,9 +245,10 @@ const worktreeExtension = path.join(installed, 'extensions', 'pi-worktree', 'git
 const developmentPath = path.join(root, 'extensions', 'piastra', 'index.ts');
 const developmentQueuePath = path.join(root, 'extensions', 'pi-queue', 'index.ts');
 const developmentCompactPath = path.join(root, 'extensions', 'pi-compact-transcript', 'index.ts');
-const installedExtensions = [extension, path.join(installed, 'extensions/pi-ui/index.ts'), worktreeExtension, queueIndex, compactIndex];
+const developmentUsagePath = path.join(root, 'extensions', 'pi-usage', 'index.ts');
+const installedExtensions = [extension, path.join(installed, 'extensions/pi-ui/index.ts'), worktreeExtension, queueIndex, compactIndex, usageIndex];
 settings.extensions = [...new Set([
-  ...(settings.extensions || []).filter((p) => p !== developmentPath && p !== developmentQueuePath && p !== developmentCompactPath),
+  ...(settings.extensions || []).filter((p) => p !== developmentPath && p !== developmentQueuePath && p !== developmentCompactPath && p !== developmentUsagePath),
   ...installedExtensions,
 ])];
 // The upstream package remains installed for updates and its commands/docs, but

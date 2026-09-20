@@ -34,6 +34,7 @@ const MANAGED_ENTRIES = [
   'extensions/pi-compact-transcript/index.ts',
   'extensions/pi-atelier/extensions/index.ts',
   'extensions/pi-todo/index.ts',
+  'extensions/pi-usage/index.ts',
 ];
 const LEGACY_DEPS = ['@agegr/pi-web', 'pi-web-ui', 'tau-mirror'];
 
@@ -160,6 +161,9 @@ test('packaged artifact installs CLI + WebUI without source and shuts down grace
   }
   for (const file of [
     'extensions/piastra/help.mjs',
+    // Full pi-usage runtime tree (the entry alone is not sufficient).
+    'extensions/pi-usage/extension.mjs',
+    'extensions/pi-usage/adapter.mjs',
     // Full launcher runtime (parent packaging phase must stage these;
     // the current help-only stub artifact fails here by design).
     'lib/cli.mjs',

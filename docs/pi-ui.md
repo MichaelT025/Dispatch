@@ -40,6 +40,17 @@ Atelier hides contributed panels until enabled. In `/atelier display`, enable `p
 
 Restart Pi or run `/reload` after installing. Use `/atelier` or Alt+A for controls, `/atelier sidebar` to toggle the sidebar, and Ctrl+Shift+R to resize it. The sidebar automatically hides in narrow terminals. Pi fullscreen mode (`pi --tui-mode fullscreen`) keeps transcript selection separate from sidebar text; ordinary terminal selection in regular mode can include sidebar columns.
 
+### Subscription usage panel
+
+The standalone `extensions/pi-usage/` extension contributes the optional
+`dispatch:subscriptions` panel. It has no dashboard dependency and does not
+import Atelier directly. After registering the extension, open `/atelier display`
+and enable `dispatch:subscriptions`; choose its position without
+replacing or resetting the other entries in the existing sidebar layout. The
+panel is populated only in interactive TUI sessions and does not poll
+Dispatch worker sessions. See the extension's [README](../extensions/pi-usage/README.md)
+for `/usage`, provider authentication, refresh cadence, and failure behavior.
+
 Ask the agent to “Track this task with todos,” and use `/todos` to inspect the planner. The optional `todo` tool remains available after Dispatch role switches. Other plugins' tools are not automatically admitted into role allowlists. Delegated workers retain their isolated tool sets; the parent owns the task plan.
 
 ## Subagents above-editor panel

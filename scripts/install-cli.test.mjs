@@ -123,6 +123,21 @@ async function writeToolRuntime(root) {
   }
 }
 
+// Synthetic pi-usage source tree: the installer must copy runtime files and
+// license but omit colocated tests.
+async function writeFixtureUsage(root, { includeTests = true } = {}) {
+  const base = path.join(root, 'extensions', 'pi-usage');
+  await mkdir(base, { recursive: true });
+  await writeFile(path.join(base, 'index.ts'), 'import { usageRuntime } from "./runtime.mjs";\nexport default usageRuntime;\n');
+  await writeFile(path.join(base, 'runtime.mjs'), 'export const usageRuntime = "pi-usage-runtime";\n');
+  await cp(path.join(repoRoot, 'extensions', 'pi-usage', 'LICENSE'), path.join(base, 'LICENSE'));
+  if (includeTests) {
+    await writeFile(path.join(base, 'runtime.test.mjs'), 'test("noop");\n');
+    await mkdir(path.join(base, '__tests__'), { recursive: true });
+    await writeFile(path.join(base, '__tests__', 'helper.mjs'), 'export const helper = 1;\n');
+  }
+}
+
 // Synthetic vendored fork: runtime files, dependencies, LICENSE/README, tests.
 // Used for tests that exercise filters/forms independent of the real
 // extensions/pi-queue tree; the copy semantics under test are identical.
@@ -317,6 +332,7 @@ test('installed fork is self-contained: runtime files copied, tests excluded, si
       await mkdir(path.join(sourceRoot, path.dirname(file)), { recursive: true });
       await cp(path.join(repoRoot, file), path.join(sourceRoot, file));
     }
+    await writeFixtureUsage(sourceRoot);
     await writeFixtureFork(sourceRoot);
     await writeRuntimeDependency(sourceRoot);
     await writeToolRuntime(sourceRoot);
@@ -340,9 +356,14 @@ test('installed fork is self-contained: runtime files copied, tests excluded, si
         },
         { source: 'npm:@thisux/pi-worktree@1.2.0' },
       ],
-      extensions: ['/existing/extension.ts'],
+      extensions: ['/existing/extension.ts', path.join(sourceRoot, 'extensions/pi-usage/index.ts')],
     };
     await writeFile(path.join(agentDir, 'settings.json'), JSON.stringify(settings));
+    const credentials = '{"token":"fixture-secret"}\n';
+    const usageConfig = '{"enabled":true}\n';
+    await writeFile(path.join(agentDir, 'credentials.json'), credentials);
+    await mkdir(path.join(agentDir, 'config'), { recursive: true });
+    await writeFile(path.join(agentDir, 'config', 'pi-usage.json'), usageConfig);
     await runInstaller(sourceRoot, agentDir);
     const installed = JSON.parse(await readFile(path.join(agentDir, 'settings.json'), 'utf8'));
 
@@ -377,6 +398,21 @@ test('installed fork is self-contained: runtime files copied, tests excluded, si
       { source: 'npm:pi-compact-transcript@0.10.1', commands: [], extensions: [] },
     );
     assert.equal(installed.packages.some((p) => typeof p === 'string' && /^npm:pi-compact-transcript/.test(p)), false);
+
+    // pi-usage is copied as a complete runtime tree, but tests are not
+    // shipped. Its installed index is the only registration and the checkout
+    // development entry is removed.
+    const installedUsage = path.join(agentDir, 'piastra/package/extensions/pi-usage');
+    const usageDevelopment = path.join(sourceRoot, 'extensions/pi-usage/index.ts');
+    assert.match(await readFile(path.join(installedUsage, 'index.ts'), 'utf8'), /runtime\.mjs/);
+    assert.match(await readFile(path.join(installedUsage, 'runtime.mjs'), 'utf8'), /pi-usage-runtime/);
+    await readFile(path.join(installedUsage, 'LICENSE'), 'utf8');
+    assert.equal(existsSync(path.join(installedUsage, 'runtime.test.mjs')), false);
+    assert.equal(existsSync(path.join(installedUsage, '__tests__')), false);
+    assert.equal(count(installed.extensions, path.join(installedUsage, 'index.ts')), 1);
+    assert.equal(installed.extensions.includes(usageDevelopment), false);
+    assert.equal(await readFile(path.join(agentDir, 'credentials.json'), 'utf8'), credentials);
+    assert.equal(await readFile(path.join(agentDir, 'config', 'pi-usage.json'), 'utf8'), usageConfig);
 
     // Fork installed recursively: index, dependency, LICENSE, README present;
     // tests of any shape excluded; index registered exactly once.
@@ -481,7 +517,10 @@ test('installed fork is self-contained: runtime files copied, tests excluded, si
     assert.deepEqual(rerun.extensions, installed.extensions);
     assert.equal(count(rerun.extensions, path.join(agentDir, 'piastra/package/extensions/pi-queue/index.ts')), 1);
     assert.equal(count(rerun.extensions, path.join(agentDir, 'piastra/package/extensions/pi-compact-transcript/index.ts')), 1);
+    assert.equal(count(rerun.extensions, path.join(agentDir, 'piastra/package/extensions/pi-usage/index.ts')), 1);
     assert.deepEqual(rerun.packages, installed.packages);
+    assert.equal(await readFile(path.join(agentDir, 'credentials.json'), 'utf8'), credentials);
+    assert.equal(await readFile(path.join(agentDir, 'config', 'pi-usage.json'), 'utf8'), usageConfig);
     const rerunRuntime = await runInstalledRuntime(agentDir, workDir);
     assert.equal(rerunRuntime.ok, true);
   } finally {
@@ -499,6 +538,7 @@ test('installer fails before saving settings when vendored fork is missing, leav
       await mkdir(path.join(sourceRoot, path.dirname(file)), { recursive: true });
       await cp(path.join(repoRoot, file), path.join(sourceRoot, file));
     }
+    await writeFixtureUsage(sourceRoot);
     await writeRuntimeDependency(sourceRoot);
     await writeToolRuntime(sourceRoot);
     // No fork in the source tree for this fixture.
@@ -530,6 +570,7 @@ test('installer preserves packages and disables only upstream worktree extension
       await mkdir(path.join(sourceRoot, path.dirname(file)), { recursive: true });
       await cp(path.join(repoRoot, file), path.join(sourceRoot, file));
     }
+    await writeFixtureUsage(sourceRoot);
     await writeFixtureFork(sourceRoot, { includeTests: false });
     await writeRuntimeDependency(sourceRoot);
     await writeToolRuntime(sourceRoot);
@@ -614,6 +655,7 @@ async function writeAtelierSources(sourceRoot) {
     await mkdir(path.join(sourceRoot, path.dirname(file)), { recursive: true });
     await cp(path.join(repoRoot, file), path.join(sourceRoot, file));
   }
+  await writeFixtureUsage(sourceRoot);
   await writeFixtureFork(sourceRoot);
   await writeFixtureAtelier(sourceRoot);
   await writeRuntimeDependency(sourceRoot);
@@ -883,6 +925,7 @@ async function writeTodoSources(sourceRoot) {
     await mkdir(path.join(sourceRoot, path.dirname(file)), { recursive: true });
     await cp(path.join(repoRoot, file), path.join(sourceRoot, file));
   }
+  await writeFixtureUsage(sourceRoot);
   await writeFixtureFork(sourceRoot);
   await writeFixtureTodo(sourceRoot);
   await writeRuntimeDependency(sourceRoot);
@@ -1272,6 +1315,12 @@ test('real todo + atelier + piastra loader smoke: single todo tool, no overlay s
       const loaded = result.extensions.filter((e) => e.path.startsWith(path.join(agentDir, 'piastra', 'package')));
       assert.equal(loaded.length, installed.extensions.length - 1, 'every managed extension entry must load (the fake /existing entry is not loaded)');
 
+      const usageExtensions = loaded.filter((e) => e.commands.has('usage'));
+      assert.equal(usageExtensions.length, 1, 'exactly one installed subscription usage command');
+      assert.equal(usageExtensions[0].path, path.join(agentDir, 'piastra/package/extensions/pi-usage/index.ts'));
+      assert.ok(usageExtensions[0].handlers.has('session_start'));
+      assert.ok(usageExtensions[0].handlers.has('session_shutdown'));
+
       // Help must work from the installed copy, not just the checkout.
       const helpExtensions = loaded.filter((e) => e.commands.has('dispatch-help'));
       assert.equal(helpExtensions.length, 1);
@@ -1318,6 +1367,7 @@ test('checkout nested under tests/__tests__ ancestors still vendors forks (root-
       await mkdir(path.join(sourceRoot, path.dirname(file)), { recursive: true });
       await cp(path.join(repoRoot, file), path.join(sourceRoot, file));
     }
+    await writeFixtureUsage(sourceRoot);
     await writeFixtureFork(sourceRoot);
     await writeFixtureAtelier(sourceRoot);
     await writeFixtureTodo(sourceRoot);
