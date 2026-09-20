@@ -38,6 +38,13 @@ export function createWorkerView(tui: any, theme: any, done: () => void, records
   let expandedTools = false;
   let focus: 'prompt' | 'output' = 'output';
   let promptScroll = 0;
+  // `x` arms a cancel for the highlighted/open worker; a second `x` within
+  // the window confirms. Any other key disarms.
+  let armedCancel: number | undefined;
+  let armedAt = 0;
+  const CANCEL_WINDOW = 3000;
+  const cancelTarget = (ids: number[]) => selected ?? ids[Math.max(0, Math.min(pickerIndex, ids.length - 1))];
+  const cancelHint = () => armedCancel !== undefined && Date.now() - armedAt < CANCEL_WINDOW ? `x again cancels #${armedCancel}` : undefined;
   const positions = new Map<number, { scroll: number; follow: boolean; max: number }>();
   const savedMessages = new Map<string, any[]>();
   const position = () => {
@@ -49,6 +56,16 @@ export function createWorkerView(tui: any, theme: any, done: () => void, records
     handleInput(data: string) {
       const ids = [...records.keys()];
       if (matchesKey(data, 'escape') || matchesKey(data, 'ctrl+c')) return done();
+      if (data === 'x') {
+        const id = cancelTarget(ids);
+        const record = id === undefined ? undefined : records.get(id);
+        if (record && ['starting', 'running'].includes(record.worker?.status)) {
+          if (armedCancel === id && Date.now() - armedAt < CANCEL_WINDOW) { record.cancel?.(); armedCancel = undefined; }
+          else { armedCancel = id; armedAt = Date.now(); }
+        } else armedCancel = undefined;
+        return tui.requestRender();
+      }
+      armedCancel = undefined;
       if (selected === undefined) {
         if (matchesKey(data, 'up')) {
           pickerIndex = pickerIndex > 0 ? pickerIndex - 1 : Math.max(0, ids.length - 1);
@@ -93,7 +110,7 @@ export function createWorkerView(tui: any, theme: any, done: () => void, records
       // field contains valid filesystem whitespace such as a newline or tab.
       const fit = (text: string) => truncateToWidth(text.replace(/[\r\n\t]/g, ' '), width);
       if (!worker) {
-        const hints = '↑/↓ select · ↑ at first: last · Enter/→ open · Esc parent';
+        const hints = cancelHint() ?? '↑/↓ select · ↑ at first: last · Enter/→ open · x cancel · Esc parent';
         const top = [fit(theme.fg('accent', 'Parent › Workers')), fit(theme.fg('dim', hints))];
         const height = Math.max(1, rows - top.length - 1);
         pickerIndex = Math.max(0, Math.min(pickerIndex, all.length - 1));
@@ -120,7 +137,7 @@ export function createWorkerView(tui: any, theme: any, done: () => void, records
       // Wrap controls rather than hiding the essential keys behind scroll counters.
       const controls = plainLines(
         `p: ${focus} ↔ ${focus === 'prompt' ? 'output' : 'prompt'} · PgUp/PgDn j/k scroll · Home/End ${focus === 'output' ? 'start/follow' : 'start/end'}\n` +
-        '←/→/Tab siblings · ↑/Esc parent · ↓ picker · Ctrl+O tools', width);
+        (cancelHint() ?? '←/→/Tab siblings · ↑/Esc parent · ↓ picker · x cancel · Ctrl+O tools'), width);
       let infoRows = avail >= 8 ? Math.min(controls.length + 1, avail - 7) : 0;
       const minOut = avail - infoRows >= 9 ? 4 : avail - infoRows >= 4 ? 2 : 1;
       // Decoration yields to content on short terminals; keep live output usable.

@@ -428,3 +428,63 @@ test('installShortcuts skips installation outside interactive mode and disarms o
   await pi.emit('session_shutdown', { reason: 'quit' }, ctx);
   assert.ok(!editor.isLeaderArmed);
 });
+
+test('escape interrupts natively; a second escape within the window cancels all workers only while some run', async () => {
+  const tui = tuiStub();
+  const notified = [];
+  let running = 0;
+  const cancels = [];
+  const actions = { ...countingActions().actions, activeWorkers: () => running, cancelAll: (ctx) => { cancels.push(ctx); } };
+  const ctx = { ui: { notify: (message, kind) => notified.push([message, kind]) } };
+  const editor = new PiastraEditor(tui, themeStub, keybindingsStub(), { actions, ctx });
+  const interrupts = [];
+  installNativeHandlers(editor, { 'app.interrupt': () => interrupts.push(true) });
+
+  // No workers: Esc is purely native, twice in a row included.
+  editor.handleInput(ESCAPE); editor.handleInput(ESCAPE);
+  await settle();
+  assert.equal(interrupts.length, 2);
+  assert.deepEqual(cancels, []);
+  assert.deepEqual(notified, []);
+
+  // Workers running: first Esc interrupts and hints; second Esc cancels all
+  // and does NOT interrupt again.
+  running = 3;
+  editor.handleInput(ESCAPE);
+  assert.equal(interrupts.length, 3);
+  assert.deepEqual(notified, [['Esc again to cancel 3 running workers.', 'info']]);
+  editor.handleInput(ESCAPE);
+  await settle();
+  assert.equal(interrupts.length, 3);
+  assert.equal(cancels.length, 1);
+  assert.equal(cancels[0], ctx);
+
+  // Any other key between the two escapes resets the escalation.
+  editor.handleInput(ESCAPE);
+  editor.handleInput('h');
+  editor.handleInput(ESCAPE);
+  await settle();
+  assert.equal(cancels.length, 1, 'typing between escapes must not cancel');
+  assert.equal(interrupts.length, 5);
+  editor.dispose();
+});
+
+test('leader c cancels everything; leader hint advertises it', async () => {
+  const tui = tuiStub();
+  const cancels = [];
+  const actions = { ...countingActions().actions, cancelAll: () => { cancels.push(true); } };
+  const editor = new PiastraEditor(tui, themeStub, keybindingsStub(), { actions });
+  editor.handleInput(CTRL_X);
+  assert.ok(editor.isLeaderArmed);
+  editor.handleInput('c');
+  await settle();
+  assert.equal(cancels.length, 1);
+  assert.equal(editor.isLeaderArmed, false);
+  assert.match(LEADER_HINT, /\bc\b/);
+  // Without a cancelAll action the key falls through as plain text.
+  const plain = new PiastraEditor(tui, themeStub, keybindingsStub(), { actions: countingActions().actions });
+  plain.handleInput(CTRL_X); plain.handleInput('c');
+  await settle();
+  assert.equal(plain.getText(), 'c');
+  editor.dispose(); plain.dispose();
+});

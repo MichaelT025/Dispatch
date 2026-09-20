@@ -39,10 +39,14 @@ function fakeEvents() {
 function fakePi(events) {
   const handlers = new Map();
   const tools = [];
+  const messages = [];
   return {
     events,
     handlers,
     tools,
+    messages,
+    sendMessage: (message, options) => { messages.push({ message, options }); },
+    registerMessageRenderer: () => {},
     on(name, handler) {
       if (!handlers.has(name)) handlers.set(name, []);
       handlers.get(name).push(handler);
@@ -215,7 +219,19 @@ test('finalizeOutstandingWorkers retires only starting and running records', () 
   assert.deepEqual(cancelled.map((worker) => worker.status), ['cancelled', 'cancelled']);
 });
 
-test('successful delegation returns worker results, transcripts and shared parent notes across batches', async t => {
+// Async delegation: `delegate` returns as soon as its workers start; the result
+// arrives through pi.sendMessage as a dispatch-worker-result custom message.
+const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+const untilSent = async (pi, count = 1, timeout = 3000) => {
+  const started = Date.now();
+  while (pi.messages.length < count) {
+    if (Date.now() - started > timeout) throw new Error(`Expected ${count} worker result messages, got ${pi.messages.length}.`);
+    await sleep(20);
+  }
+  return pi.messages;
+};
+
+test('async delegation: delegate returns started workers, results arrive as one steer message and the guard releases', async t => {
   const dir = await mkdtemp(join(tmpdir(), 'piastra-delegate-success-'));
   const originalDir = process.env.PI_CODING_AGENT_DIR;
   process.env.PI_CODING_AGENT_DIR = dir;
@@ -232,35 +248,83 @@ test('successful delegation returns worker results, transcripts and shared paren
   t.mock.method(ModelRuntime, 'create', async () => models);
   const prompts = [];
   // Use real SDK construction and permissions, replacing only the paid model
-  // interaction. This exercises the successful delegate return/cleanup path.
+  // interaction. Each worker answers with the prompt it received.
   t.mock.method(AgentSession.prototype, 'prompt', async function (prompt) {
     prompts.push(prompt);
-    this.agent.state.messages.push({ role: 'assistant', content: [{ type: 'text', text: 'Verified worker result' }], stopReason: 'stop' });
+    await sleep(30);
+    this.agent.state.messages.push({ role: 'assistant', content: [{ type: 'text', text: `Verified worker result for ${prompt.split('\n')[0]}` }], stopReason: 'stop' });
   });
   const extension = await import(pathToFileURL(join(root, 'extensions', 'piastra', 'index.ts')).href);
   const events = fakeEvents();
   const pi = fakePi(events);
   extension.default(pi);
   const delegate = pi.tools.find(tool => tool.name === 'delegate');
-  const ctx = { cwd: root, sessionManager: { getSessionId: () => 'parent-success' }, isProjectTrusted: () => true, ui: { notify() {} } };
-  for (const callId of ['first-batch', 'later-batch']) {
-    const output = await delegate.execute(callId, { tasks: [{ role: 'fast', access: 'read', task: 'Inspect the assigned files' }] }, undefined, undefined, ctx);
-    assert.match(output.content[0].text, /Shared session notes:/);
-    assert.match(output.content[0].text, /Verified worker result/);
-    assert.equal(output.details.results[0].ok, true);
-    assert.equal(output.details.workers[0].status, 'completed');
-    assert.ok(output.details.results[0].transcript);
-    assert.equal(output.details.notesDir, join(dir, 'piastra', 'runs', 'parent-success', 'notes'));
-    const query = { type: 'query', busy: false, active: 0 };
-    events.emit(PIASTRA_WORKER_GUARD_CHANNEL, query);
-    assert.equal(query.active, 0);
-  }
+  const ctx = { cwd: root, sessionManager: { getSessionId: () => 'parent-success' }, isProjectTrusted: () => true, isIdle: () => true, ui: { notify() {} } };
+
+  const output = await delegate.execute('first-batch', { tasks: [
+    { role: 'fast', access: 'read', task: 'Inspect the assigned files' },
+    { role: 'general', access: 'write', task: 'Edit the assigned files' },
+  ] }, undefined, undefined, ctx);
+  // The tool result is an acknowledgement, not the worker result.
+  assert.match(output.content[0].text, /Started 2 workers; results arrive as \[dispatch-worker-result\] messages/);
+  assert.match(output.content[0].text, /#1 fast \(read\)/);
+  assert.match(output.content[0].text, /#2 general \(write\)/);
+  assert.match(output.content[0].text, /Shared session notes:/);
+  assert.ok(!/Verified worker result/.test(output.content[0].text), 'delegate must not block on worker output');
+  assert.deepEqual(output.details.workers.map(w => w.status), ['starting', 'starting']);
+  assert.equal(output.details.notesDir, join(dir, 'piastra', 'runs', 'parent-success', 'notes'));
+  // Workers are still live after the call returned: the switch guard holds.
+  const busy = { type: 'query', busy: false, active: 0 };
+  events.emit(PIASTRA_WORKER_GUARD_CHANNEL, busy);
+  assert.equal(busy.active, 2);
+
+  // Both results land within the coalescing window and travel as ONE message
+  // that triggers an orchestrator turn.
+  const [message] = await untilSent(pi, 1);
+  await sleep(50);
+  assert.equal(pi.messages.length, 1, 'two workers finishing together must produce one message');
+  assert.equal(message.message.customType, 'dispatch-worker-result');
+  assert.equal(message.message.display, true);
+  assert.deepEqual(message.options, { triggerTurn: true, deliverAs: 'steer' });
+  assert.match(message.message.content, /Worker results \(2\):/);
+  assert.match(message.message.content, /#1 fast · opencode-go\/deepseek-v4\.1-flash · completed · \d+s\nVerified worker result for Inspect the assigned files/);
+  assert.match(message.message.content, /#2 general · opencode-go\/glm-5\.3-flash · completed/);
+  assert.match(message.message.content, /Transcript: .+\.jsonl/);
+  assert.deepEqual(message.message.details.workers.map(w => w.status), ['completed', 'completed']);
+  assert.equal(message.message.details.results.length, 2);
+  const free = { type: 'query', busy: false, active: 0 };
+  events.emit(PIASTRA_WORKER_GUARD_CHANNEL, free);
+  assert.equal(free.active, 0);
   assert.equal(prompts.length, 2);
   for (const prompt of prompts) assert.match(prompt, /parent-success/);
+
+  // await_workers on finished workers returns the cached results directly.
+  const awaitTool = pi.tools.find(tool => tool.name === 'await_workers');
+  const awaited = await awaitTool.execute('await-1', { ids: [1] }, undefined, undefined, ctx);
+  assert.match(awaited.content[0].text, /Worker results \(1\):\n\n#1 fast/);
+  assert.deepEqual(awaited.details.workers.map(w => w.id), [1]);
+  const idle = await awaitTool.execute('await-2', {}, undefined, undefined, ctx);
+  assert.equal(idle.content[0].text, 'No running workers.');
+
+  // continue_worker re-prompts the SAME session (third prompt, no new worker id)
+  // and delivers through a fresh result message.
+  const continueTool = pi.tools.find(tool => tool.name === 'continue_worker');
+  const continued = await continueTool.execute('continue-1', { id: 2, task: 'Also fix the test' }, undefined, undefined, ctx);
+  assert.match(continued.content[0].text, /Continued worker #2/);
+  assert.equal(continued.details.workers[0].status, 'starting');
+  await untilSent(pi, 2);
+  assert.equal(prompts.length, 3);
+  assert.match(prompts[2], /^Also fix the test/);
+  assert.match(pi.messages[1].message.content, /#2 general · .* · completed · \d+s\nVerified worker result for Also fix the test/);
+  await assert.rejects(continueTool.execute('continue-2', { id: 9, task: 'x' }, undefined, undefined, ctx), /Unknown worker #9/);
+
+  // Results are not re-delivered by a later flush: the queue is empty.
+  await sleep(400);
+  assert.equal(pi.messages.length, 2);
   for (const handler of pi.handlers.get('session_shutdown') || []) await handler({}, ctx);
 });
 
-test('a rejected worker runtime initialization finalizes records and releases the guard', async () => {
+test('a rejected worker runtime initialization is reported as a failed result message and releases the guard', async () => {
   const extension = await import(pathToFileURL(join(root, 'extensions', 'piastra', 'index.ts')).href);
   const events = fakeEvents();
   const pi = fakePi(events);
@@ -272,19 +336,20 @@ test('a rejected worker runtime initialization finalizes records and releases th
   events.on('pi-atelier:sidebar-panels', (event) => {
     if (event?.type === 'register') panel = event.panel;
   });
-
+  const ctx = { cwd: root, sessionManager: { getSessionId: () => 'guard-init' }, isProjectTrusted: () => true, isIdle: () => true, ui: { notify: () => {} } };
   const originalCreate = ModelRuntime.create;
   ModelRuntime.create = async () => { throw new Error('synthetic runtime initialization failure'); };
   try {
-    await assert.rejects(
-      delegate.execute('call-init', {
-        tasks: [
-          { role: 'general', access: 'write', task: 'Edit a file' },
-          { role: 'fast', access: 'read', task: 'Inspect a file' },
-        ],
-      }, undefined, undefined, { cwd: root, sessionManager: { getSessionId: () => 'guard-init' }, isProjectTrusted: () => true, ui: { notify: () => {} } }),
-      /synthetic runtime initialization failure/,
-    );
+    const output = await delegate.execute('call-init', {
+      tasks: [
+        { role: 'general', access: 'write', task: 'Edit a file' },
+        { role: 'fast', access: 'read', task: 'Inspect a file' },
+      ],
+    }, undefined, undefined, ctx);
+    assert.match(output.content[0].text, /Started 2 workers/);
+    const [message] = await untilSent(pi, 1);
+    assert.match(message.message.content, /#1 general · .* · FAILED · \d+s\nsynthetic runtime initialization failure/);
+    assert.match(message.message.content, /#2 fast · .* · FAILED/);
   } finally {
     ModelRuntime.create = originalCreate;
   }
@@ -296,36 +361,110 @@ test('a rejected worker runtime initialization finalizes records and releases th
   const rows = panel.rows.filter((row) => row.text.startsWith('#'));
   assert.equal(rows.length, 2);
   for (const worker of rows) assert.match(worker.text, /· failed ·/, worker.text);
+  for (const handler of pi.handlers.get('session_shutdown') || []) await handler({}, ctx);
 });
 
-test('a cancelled worker batch finalizes starting records so the guard releases', async () => {
+test('an aborted delegate call starts nothing; cancel_worker stops a starting worker and returns it without a duplicate message', async () => {
   const extension = await import(pathToFileURL(join(root, 'extensions', 'piastra', 'index.ts')).href);
   const events = fakeEvents();
   const pi = fakePi(events);
   extension.default(pi);
   const delegate = pi.tools.find((tool) => tool.name === 'delegate');
-  assert.ok(delegate, 'delegate tool is registered');
-
-  let panel;
-  events.on('pi-atelier:sidebar-panels', (event) => {
-    if (event?.type === 'register') panel = event.panel;
-  });
+  const cancelTool = pi.tools.find((tool) => tool.name === 'cancel_worker');
+  const ctx = { cwd: root, sessionManager: { getSessionId: () => 'guard-cancel' }, isProjectTrusted: () => true, isIdle: () => true, ui: { notify: () => {} } };
 
   const controller = new AbortController();
   controller.abort();
   await assert.rejects(
-    delegate.execute('call-cancel', {
-      tasks: [{ role: 'fast', access: 'read', task: 'Inspect a file' }],
-    }, controller.signal, undefined, { cwd: root, sessionManager: { getSessionId: () => 'guard-cancel' }, isProjectTrusted: () => true, ui: { notify: () => {} } }),
+    delegate.execute('call-cancel', { tasks: [{ role: 'fast', access: 'read', task: 'Inspect a file' }] }, controller.signal, undefined, ctx),
     (error) => error?.name === 'AbortError',
   );
+  const none = { type: 'query', busy: false, active: 0 };
+  events.emit(PIASTRA_WORKER_GUARD_CHANNEL, none);
+  assert.equal(none.active, 0, 'an aborted call must not register workers');
 
-  const query = { type: 'query', busy: false, active: 0 };
-  events.emit(PIASTRA_WORKER_GUARD_CHANNEL, query);
-  assert.deepEqual(query, { type: 'query', busy: false, active: 0, compacting: false, summarizing: false });
-  assert.ok(panel, 'sidebar published the finalized batch');
-  assert.ok(panel.rows.some((row) => row.text.startsWith('#') && /· cancelled ·/.test(row.text)), JSON.stringify(panel.rows));
-  assert.ok(!panel.rows.some((row) => row.text.startsWith('#') && /· (starting|running) ·/.test(row.text)), JSON.stringify(panel.rows));
+  // A hung runtime keeps the worker `starting`; cancel_worker aborts it.
+  const originalCreate = ModelRuntime.create;
+  ModelRuntime.create = () => new Promise((_resolve, reject) => setTimeout(() => reject(new Error('fixture: never used')), 5000));
+  try {
+    await delegate.execute('call-hang', { tasks: [{ role: 'fast', access: 'read', task: 'Inspect a file' }] }, undefined, undefined, ctx);
+    const active = { type: 'query', busy: false, active: 0 };
+    events.emit(PIASTRA_WORKER_GUARD_CHANNEL, active);
+    assert.equal(active.active, 1);
+    const cancelled = await cancelTool.execute('cancel-1', { id: 1 }, undefined, undefined, ctx);
+    assert.match(cancelled.content[0].text, /#1 fast · .* · CANCELLED/);
+    assert.equal(cancelled.details.workers[0].status, 'cancelled');
+    const released = { type: 'query', busy: false, active: 0 };
+    events.emit(PIASTRA_WORKER_GUARD_CHANNEL, released);
+    assert.equal(released.active, 0);
+    // The direct return consumed the queued result: no message follows.
+    await sleep(450);
+    assert.equal(pi.messages.length, 0, 'cancel_worker must not also deliver a result message');
+    const again = await cancelTool.execute('cancel-2', { id: 1 }, undefined, undefined, ctx);
+    assert.match(again.content[0].text, /not running \(cancelled\)/);
+  } finally {
+    ModelRuntime.create = originalCreate;
+    for (const handler of pi.handlers.get('session_shutdown') || []) await handler({}, ctx);
+  }
+});
+
+test('/cancel stops workers by id, all, or a picker without spending a turn; bad ids and idle states notify', async () => {
+  const extension = await import(pathToFileURL(join(root, 'extensions', 'piastra', 'index.ts')).href);
+  const events = fakeEvents();
+  const pi = fakePi(events);
+  const commands = new Map();
+  pi.registerCommand = (name, definition) => { commands.set(name, definition); };
+  extension.default(pi);
+  const delegate = pi.tools.find((tool) => tool.name === 'delegate');
+  const cancel = commands.get('cancel');
+  assert.ok(cancel, '/cancel is registered');
+  assert.match(cancel.description, /\/cancel <id>/);
+  const notices = [];
+  let pick;
+  const ctx = { cwd: root, hasUI: true, sessionManager: { getSessionId: () => 'guard-slash-cancel' }, isProjectTrusted: () => true, isIdle: () => true,
+    ui: { notify: (message, level) => notices.push({ message, level }), select: async () => pick } };
+
+  await cancel.handler('', ctx);
+  assert.deepEqual(notices.at(-1), { message: 'No running workers.', level: 'info' });
+
+  const originalCreate = ModelRuntime.create;
+  ModelRuntime.create = () => new Promise((_resolve, reject) => setTimeout(() => reject(new Error('fixture: never used')), 5000));
+  try {
+    await delegate.execute('call-hang', { tasks: [
+      { role: 'fast', access: 'read', task: 'Inspect a file' },
+      { role: 'general', access: 'write', task: 'Edit a file' },
+      { role: 'fast', access: 'read', task: 'Read the docs' },
+    ] }, undefined, undefined, ctx);
+    await cancel.handler('#9', ctx);
+    assert.match(notices.at(-1).message, /Unknown worker #9\. Running: #1, #2, #3\./);
+    assert.equal(notices.at(-1).level, 'warning');
+
+    await cancel.handler('1', ctx);
+    assert.match(notices.at(-1).message, /Cancelling #1\./);
+    await untilSent(pi, 1);
+    assert.match(pi.messages[0].message.content, /#1 fast · .* · CANCELLED/);
+    await cancel.handler('1', ctx);
+    assert.match(notices.at(-1).message, /not running \(cancelled\)/);
+
+    // Bare /cancel picks from running workers only.
+    pick = undefined;
+    await cancel.handler('', ctx);
+    assert.ok(!/Cancelling/.test(notices.at(-1).message), 'dismissing the picker cancels nothing');
+    pick = '#2 general · Edit a file';
+    await cancel.handler('', ctx);
+    assert.match(notices.at(-1).message, /Cancelling #2\./);
+    await untilSent(pi, 2);
+
+    await cancel.handler('all', ctx);
+    assert.match(notices.at(-1).message, /Cancelling #3\./);
+    await untilSent(pi, 3);
+    const query = { type: 'query', busy: false, active: 0 };
+    events.emit(PIASTRA_WORKER_GUARD_CHANNEL, query);
+    assert.equal(query.active, 0);
+  } finally {
+    ModelRuntime.create = originalCreate;
+    for (const handler of pi.handlers.get('session_shutdown') || []) await handler({}, ctx);
+  }
 });
 
 test('the PiAstra extension registers the guard handshake and session_before_switch guard', async () => {
