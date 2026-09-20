@@ -1,4 +1,4 @@
-import { requestJson, UsageRequestError } from './http.mjs';
+import { requestJson } from './http.mjs';
 import { parseCommandCodeTimestamp } from './command-quota.mjs';
 
 const API_ROOT = 'https://api.commandcode.ai/alpha';
@@ -18,8 +18,9 @@ function commandCodeUrl(path, params = {}) {
 
 function organizationId(whoami) {
   const id = whoami?.org?.id;
-  if (typeof id !== 'string' || !id.trim()) throw new UsageRequestError('PARSE');
-  return id.trim();
+  // Personal accounts can return org: null. Omit orgId in that case so
+  // the API resolves the authenticated account, as in Usage-Dashboard.
+  return typeof id === 'string' && id.trim() ? id.trim() : undefined;
 }
 
 function currentPeriodStart(subscriptions) {
