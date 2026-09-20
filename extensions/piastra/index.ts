@@ -174,10 +174,16 @@ export default function (pi: ExtensionAPI) {
   // Ctrl+T cycles thinking level, Ctrl+X arms a short leader where
   // t toggles thinking, y copies the last message, a opens this picker and
   // w opens the worker overlay; m opens the model picker. Existing ctrl+shift+a/w aliases stay.
+  // Cancel-all is wired below once the worker registry exists; the editor
+  // reads it lazily so installation order does not matter.
+  let cancelEverything: (ctx: any) => void = () => {};
+  let runningWorkers: () => number = () => 0;
   installShortcuts(pi, {
     cycleAgents: ctx => attempt(() => agents.cycle(ctx), ctx),
     openAgentPicker: ctx => pickAgent('', ctx),
     openWorkers: ctx => attempt(() => openWorkers(ctx), ctx),
+    activeWorkers: () => runningWorkers(),
+    cancelAll: ctx => cancelEverything(ctx),
   });
   pi.on('before_agent_start', async event => {
     const instructions = agents.active === 'orchestrator'
@@ -377,6 +383,14 @@ Shared session notes: use list_notes/read_note to reuse earlier findings. ${acce
   pi.on('session_shutdown', async () => { disposeAll(); });
   pi.on('agent_start', (_event, ctx) => { rememberCtx(ctx); });
   pi.on('agent_settled', (_event, ctx) => { rememberCtx(ctx); });
+  runningWorkers = () => workerGuard.count();
+  // Ctrl+X then c, or Esc twice: stop the orchestrator turn and every worker.
+  cancelEverything = ctx => {
+    const running = activeRecords();
+    if (ctx && typeof ctx.isIdle === 'function' && !ctx.isIdle()) { try { ctx.abort?.(); } catch { /* best effort */ } }
+    for (const record of running) record.cancel?.();
+    ctx?.ui?.notify?.(running.length ? `Cancelling ${running.map(r => `#${r.worker.id}`).join(', ')}.` : 'No running workers.', 'info');
+  };
   // /cancel <id> | all | (none: pick from running workers). Same cancel path
   // as cancel_worker and the viewer's `x`, without spending an orchestrator turn.
   pi.registerCommand('cancel', {

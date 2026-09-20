@@ -117,7 +117,9 @@ export function readEditorCapability(factory: unknown): CooperativeEditorCapabil
 }
 
 export const LEADER_TIMEOUT_MS = 2000;
-export const LEADER_HINT = ' x→ t y a w m ';
+export const LEADER_HINT = ' x→ t y a w m c ';
+/** Second Esc within this window (workers running) cancels every worker. */
+export const ESCAPE_CANCEL_WINDOW_MS = 1500;
 
 /** Property marker on the installed factory so /reload replacements never nest. */
 export const EDITOR_FACTORY_BRAND = 'piastraShortcutsFactory';
@@ -133,6 +135,10 @@ export interface PiastraShortcutActions {
    * (or throw) to fall back to the native app.tools.expand handler.
    */
   toggleTools?: (ctx: any) => boolean;
+  /** Number of running Dispatch workers; drives the double-Esc escalation. */
+  activeWorkers?: (ctx: any) => number;
+  /** Ctrl+X then c, or Esc twice while workers run: stop the orchestrator turn and every worker. */
+  cancelAll?: (ctx: any) => void | Promise<void>;
 }
 
 export interface PiastraEditorOptions {
@@ -165,6 +171,7 @@ export class PiastraEditor extends CustomEditor {
   private leaderTimer: ReturnType<typeof setTimeout> | undefined;
   private initialExpandedText: string | undefined;
   private bracketedPaste: string | undefined;
+  private escapeAt = 0;
 
   constructor(tui: any, theme: any, keybindings: any, options: PiastraEditorOptions = {}) {
     super(tui, theme, keybindings, { embedWorkingStatus: options.embedWorkingStatus === true });
@@ -237,9 +244,12 @@ export class PiastraEditor extends CustomEditor {
       if (matchesKey(data, 'm')) return this.invokeNative('app.model.select', data);
       if (matchesKey(data, 'a')) return this.runAction('openAgentPicker');
       if (matchesKey(data, 'w')) return this.runAction('openWorkers');
+      if (matchesKey(data, 'c') && this.actions.cancelAll) return this.runAction('cancelAll');
       // Unmatched key: disarm (done above) and fall through normally.
       return super.handleInput(data);
     }
+    if (matchesKey(data, 'escape')) return this.handleEscape(data);
+    this.escapeAt = 0;
     if (matchesKey(data, 'shift+tab')) return this.runAction('cycleAgents');
     if (matchesKey(data, 'ctrl+x')) return this.armLeader();
     if (matchesKey(data, 'ctrl+t')) return this.invokeNative('app.thinking.cycle', data);
@@ -366,6 +376,25 @@ export class PiastraEditor extends CustomEditor {
     this.invokeNative('app.tools.expand', data);
   }
 
+  /**
+   * Esc keeps its native meaning (interrupt the agent turn, dismiss
+   * autocomplete). Workers are detached from the turn, so while any run a
+   * second Esc within the window escalates to cancelling all of them.
+   */
+  private handleEscape(data: string): void {
+    let running = 0;
+    try { running = this.actions.activeWorkers?.(this.ctx) ?? 0; } catch { running = 0; }
+    if (running <= 0) { this.escapeAt = 0; return super.handleInput(data); }
+    const now = Date.now();
+    if (this.escapeAt && now - this.escapeAt <= ESCAPE_CANCEL_WINDOW_MS) {
+      this.escapeAt = 0;
+      return this.runAction('cancelAll');
+    }
+    this.escapeAt = now;
+    try { this.ctx.ui?.notify?.(`Esc again to cancel ${running} running worker${running === 1 ? '' : 's'}.`, 'info'); } catch { /* hint only */ }
+    super.handleInput(data);
+  }
+
   private runAction(name: keyof PiastraShortcutActions): void {
     const action = this.actions[name];
     if (!action) return;
@@ -434,6 +463,8 @@ export function installShortcuts(pi: ExtensionAPI, actions: PiastraShortcutActio
             cycleAgents: guarded(actions.cycleAgents),
             openAgentPicker: guarded(actions.openAgentPicker),
             openWorkers: guarded(actions.openWorkers),
+            activeWorkers: actions.activeWorkers,
+            cancelAll: actions.cancelAll ? guarded(actions.cancelAll) : undefined,
             // Ctrl+O must answer synchronously (the editor needs the handled
             // flag before deciding on the native fallback), so this action is
             // not routed through the async `guarded` wrapper. Emission errors
