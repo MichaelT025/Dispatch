@@ -21,7 +21,7 @@ test('help exposes the required seven sections with string line arrays', () => {
 
 test('content names real commands, real shortcuts, and when-to-use tips', () => {
   const all = formatHelp('all');
-  for (const cmd of ['/dispatch', '/piastra', '/agent', '/workers', '/dispatch-help', '/q ', '/st ', '/pause', '/queue-drain', '/worktree', '/todos', '/atelier', '/new', '/model', '/reload']) {
+  for (const cmd of ['/dispatch', '/piastra', '/agent', '/workers', '/dispatch-help', '/q ', '/st ', '/pause', '/queue-drain', '/worktree', '/todos', '/atelier', '/new', '/model', '/reload', '/rename', '/name <title>']) {
     assert.ok(all.includes(cmd), `help names ${cmd}`);
   }
   for (const key of ['Shift+Tab', 'Ctrl+T', 'Ctrl+O', 'Ctrl+V', 'Alt+V', 'Ctrl+X', 'Ctrl+Shift+A', 'Ctrl+Shift+W', 'PgUp', 'Home', 'End']) {
