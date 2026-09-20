@@ -53,3 +53,14 @@ Names are simple letters/numbers/dashes/underscores with optional `.md`. Notes a
 `npm install` installs the parser/IP-validation dependencies. `npm run install:cli` updates the standalone extension and its complete runtime dependency closure. Reload/restart Pi after installation to expose new tools.
 
 `npm test` and `npm run test:cli` include offline web transport tests, real subprocess/check execution (including Windows npm and process-tree cancellation), Git temp-repository tests, session-note/role/SDK tests, and standalone installed-runtime tests. Real Tavily search still requires an API key and is not part of the offline suite.
+
+## Worker tools (orchestrator only)
+
+| Tool | Purpose |
+| --- | --- |
+| `delegate({tasks})` | Starts one worker per task and returns immediately with their ids. Each result arrives later as a `[dispatch-worker-result]` message. |
+| `await_workers({ids?})` | Blocks until the listed workers (default: all running) finish and returns their results. Results returned this way are not delivered again as a message. |
+| `cancel_worker({id})` | Aborts one running worker and returns its final state. |
+| `continue_worker({id, task})` | Re-prompts a finished worker in its existing session (same role and access), keeping its context. Unavailable once the parent session has been resumed. |
+
+Result messages are persisted custom messages, so a resumed session still contains every worker result; workers that were still running when the session ended restore as `interrupted`. Compaction and branch summaries defer result delivery until they finish.

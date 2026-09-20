@@ -1,5 +1,6 @@
 // Keep terminal previews bounded; full events remain in each Pi transcript.
 const clean = value => String(value ?? '').replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '').replace(/[\x00-\x1f\x7f-\x9f]/g, ' ');
+export const cleanTask = clean;
 export function makeWorker(task, index, model, toolCallId) {
   // toolCallId links the worker to the delegate call that started it (viewers
   // group workers per call; it is saved with the tool result for restores).

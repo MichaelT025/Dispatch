@@ -18,8 +18,13 @@ async function resolveNativeAuth(registry, provider) {
 export function createAuthResolver(registry, { env = process.env, home = homedir(), read = readFile } = {}) {
   return async (provider) => {
     if (provider !== 'command-code') return resolveNativeAuth(registry, provider);
-    // Prefer a future native provider when registered; never fall back after its auth fails.
-    if (registry.getProvider?.('command-code')) return resolveNativeAuth(registry, provider);
+    // Prefer the bundled native id, then the normalized alias; never fall back after native auth fails.
+    const nativeProvider = registry.getProvider?.('commandcode')
+      ? 'commandcode'
+      : registry.getProvider?.('command-code')
+        ? 'command-code'
+        : undefined;
+    if (nativeProvider) return resolveNativeAuth(registry, nativeProvider);
     const key = env.COMMAND_CODE_API_KEY;
     if (typeof key === 'string' && key.trim()) return { apiKey: key.trim() };
     try {

@@ -54,12 +54,14 @@ installs silently.
 | `Ctrl+O` | Toggle tool output expansion — the compact-transcript plugin claims the toggle when compact mode is on; otherwise native `app.tools.expand` |
 | `Ctrl+V` | Native clipboard paste — clipboard images show as `[Image #1]`, `[Image #2]`, … |
 | `Alt+V` | Same native clipboard paste (fallback when the terminal intercepts `Ctrl+V`) |
-| `Ctrl+X` | Arm the leader key for 2 seconds; a small hint (` x→ t y a w m `) appears on the editor border |
+| `Esc` | Native interrupt of the agent turn. Workers keep running; while any do, a second `Esc` within 1.5 s cancels all of them (a notice says so after the first) |
+| `Ctrl+X` | Arm the leader key for 2 seconds; a small hint (` x→ t y a w m c `) appears on the editor border |
 | `Ctrl+X` then `t` | Native `app.thinking.toggle` (collapse/expand thinking blocks) |
 | `Ctrl+X` then `y` | Native `app.message.copy` (copy last assistant message) |
 | `Ctrl+X` then `a` | Dispatch agent picker (same list as `/agent`) |
 | `Ctrl+X` then `w` | Worker overlay (same view as `/workers`) |
 | `Ctrl+X` then `m` | Native model picker (same as `Ctrl+L` / `/model`) |
+| `Ctrl+X` then `c` | Cancel everything: abort the orchestrator turn and every running worker |
 | `Ctrl+X` then `Esc` | Cancel the leader without aborting the agent |
 | `Ctrl+X` then other key | Disarm and fall through — the key does its normal thing |
 | `Ctrl+X` then `Ctrl+X` | Rearm; the 2-second timer restarts |
@@ -207,6 +209,7 @@ Keys while a worker is open:
 | `p` | Switch scroll focus between prompt and output panes (output focused by default) |
 | `PgUp`/`PgDn`, `j`/`k`, `Home`/`End` | Page/line/edge scrolling for the focused pane; `End` re-enables output follow |
 | `Ctrl+O` | Toggle transcript tool expansion |
+| `x` (twice) | Cancel the open worker; in the picker, the highlighted one |
 | `Esc`/`Ctrl+C` | Close the viewer |
 
 ## Files

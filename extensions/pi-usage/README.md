@@ -80,7 +80,7 @@ endpoint and may change independently of Pi.
 Command Code support uses the alpha API and should be treated as subject to
 provider changes. Authentication precedence is:
 
-1. A future native Dispatch/Pi `command-code` provider, when registered.
+1. The bundled native Dispatch/Pi `commandcode` provider, when registered (with `command-code` supported as an alias).
 2. A non-empty `COMMAND_CODE_API_KEY` environment variable.
 3. `COMMAND_CODE_AUTH_PATH`, or the default local file
    `~/.commandcode/auth.json`.

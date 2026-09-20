@@ -21,6 +21,20 @@ Setup is explicit: installation and ordinary launch never start authentication a
 
 Credentials stay in the isolated Pi credential store, never in command arguments or conversations. Setup does not copy your plain Pi credentials or send inference requests to validate them.
 
+## Command Code provider
+
+Dispatch bundles `pi-commandcode-provider` 0.7.1; no separate `pi install` is needed.
+In Dispatch, run `/login`, choose **Use a subscription → Command Code**, then
+select a model with `/model`. Alternatively set `COMMAND_CODE_API_KEY`.
+This is an unofficial integration requiring your own Command Code account and
+eligible plan. The provider can also read existing credentials from
+`~/.commandcode/auth.json`, `~/.pi/agent/auth.json`, or `~/.omp/agent/auth.json`.
+Bundling does not change Dispatch's default models or setup requirements.
+The provider refreshes its catalog from Command Code on load, independently of
+Dispatch/Pi update-check offline flags. Without a cached catalog, this can wait
+up to 10 seconds; if discovery fails, Dispatch still loads but Command Code
+models remain unavailable until a successful `/commandcode-refresh`.
+
 ## Launch
 
 ```sh

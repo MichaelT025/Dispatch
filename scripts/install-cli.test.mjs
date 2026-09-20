@@ -73,6 +73,7 @@ const supportFiles = [
   'extensions/piastra/progress.mjs',
   'extensions/piastra/sidebar.mjs',
   'extensions/piastra/worker-bridge.mjs',
+  'extensions/piastra/worker-runtime.mjs',
   'extensions/piastra/session-title.mjs',
   'extensions/piastra/worker-view.ts',
   'extensions/piastra/help.mjs',

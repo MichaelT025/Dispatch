@@ -151,7 +151,7 @@ test('prefers a registered native Command Code provider over env and file creden
   const resolve = createAuthResolver({
     getProvider(provider) {
       calls.push(['getProvider', provider]);
-      return { id: provider };
+      return provider === 'commandcode' ? { id: provider } : undefined;
     },
     async getProviderAuth(provider) {
       calls.push(['getProviderAuth', provider]);
@@ -168,6 +168,30 @@ test('prefers a registered native Command Code provider over env and file creden
 
   assert.deepEqual(await resolve('command-code'), { apiKey: secret });
   assert.deepEqual(calls, [
+    ['getProvider', 'commandcode'],
+    ['getProviderAuth', 'commandcode'],
+  ]);
+});
+
+test('supports the normalized native Command Code provider alias', async () => {
+  const calls = [];
+  const resolve = createAuthResolver({
+    getProvider(provider) {
+      calls.push(['getProvider', provider]);
+      return provider === 'command-code' ? { id: provider } : undefined;
+    },
+    async getProviderAuth(provider) {
+      calls.push(['getProviderAuth', provider]);
+      return { auth: { apiKey: 'native-alias-secret' }, source: 'runtime' };
+    },
+  }, {
+    env: { COMMAND_CODE_API_KEY: 'stale-env-secret' },
+    read: noCredentialReads(),
+  });
+
+  assert.deepEqual(await resolve('command-code'), { apiKey: 'native-alias-secret' });
+  assert.deepEqual(calls, [
+    ['getProvider', 'commandcode'],
     ['getProvider', 'command-code'],
     ['getProviderAuth', 'command-code'],
   ]);
@@ -177,7 +201,7 @@ test('does not fall back to local credentials when native Command Code auth refr
   const secret = 'native-refresh-secret';
   let reads = 0;
   const resolve = createAuthResolver({
-    getProvider: () => ({ id: 'command-code' }),
+    getProvider: provider => provider === 'commandcode' ? { id: provider } : undefined,
     async getProviderAuth() {
       throw new Error(`native refresh rejected ${secret}`);
     },
@@ -198,7 +222,7 @@ test('preserves normalized native AUTH failures without trying fallback credenti
   for (const provider of ['openai-codex', 'opencode-go', 'command-code']) {
     const expected = new UsageRequestError('AUTH');
     const resolve = createAuthResolver({
-      getProvider: () => ({ id: 'command-code' }),
+      getProvider: provider => provider === 'commandcode' ? { id: provider } : undefined,
       async getProviderAuth() {
         throw expected;
       },
@@ -224,7 +248,7 @@ function nativeDefinition(id) {
 
 test('integrates the installed ModelRegistry facade with fetchProvider for all native providers', async () => {
   const runtime = {
-    getProvider: provider => provider === 'command-code' ? { id: provider } : undefined,
+    getProvider: provider => provider === 'commandcode' ? { id: provider } : undefined,
     async getAuth(provider) {
       return {
         auth: { apiKey: `native-${provider}-token` },
@@ -253,15 +277,21 @@ test('integrates the installed ModelRegistry facade with fetchProvider for all n
 
   assert.deepEqual(results.map(result => result.state), ['ok', 'ok', 'ok']);
   assert.deepEqual(requests.map(request => request.url), definitions.map(({ id }) => `https://usage.invalid/${id}`));
-  assert.deepEqual(requests.map(request => request.authorization), definitions.map(({ id }) => `Bearer native-${id}-token`));
+  assert.deepEqual(requests.map(request => request.authorization), [
+    'Bearer native-openai-codex-token',
+    'Bearer native-opencode-go-token',
+    'Bearer native-commandcode-token',
+  ]);
 });
 
 test('keeps native providers unconfigured when the installed registry has no auth result', async () => {
   const registry = new ModelRegistry({
-    getProvider: provider => provider === 'command-code' ? { id: provider } : undefined,
+    getProvider: provider => provider === 'commandcode' ? { id: provider } : undefined,
     async getAuth() { return undefined; },
   });
-  const resolve = resolver(registry);
+  const resolve = resolver(registry, {
+    env: { COMMAND_CODE_API_KEY: 'fallback-command-secret' },
+  });
   let requests = 0;
   const fetch = async () => {
     requests += 1;

@@ -550,3 +550,34 @@ test('real TUI overlay composition stays fixed when the parent grows', () => {
     assert.doesNotMatch(stripTerminalSequences(after.join('\n')), /Parent update/);
   } finally { handle?.hide(); view.dispose(); }
 });
+
+test('x arms and a second x cancels the highlighted or open worker; other keys disarm; finished workers ignore it', () => {
+  const cancelled = [];
+  const records = new Map([
+    [1, { worker: baseWorker(1, 'first'), getMessages: () => [], cancel: () => cancelled.push(1) }],
+    [2, { worker: baseWorker(2, 'second', { status: 'completed' }), getMessages: () => [], cancel: () => cancelled.push(2) }],
+  ]);
+  const view = createWorkerView(mkTui(24), theme, () => {}, records);
+  try {
+    // Picker: highlighted #1.
+    view.handleInput('x');
+    assert.match(view.render(80).join('\n'), /x again cancels #1/);
+    view.handleInput('\x1b[B'); // any other key disarms
+    view.handleInput('\x1b[A');
+    assert.ok(!/x again/.test(view.render(80).join('\n')));
+    view.handleInput('x'); view.handleInput('x');
+    assert.deepEqual(cancelled, [1]);
+    assert.ok(!/x again/.test(view.render(80).join('\n')), 'confirmed cancel disarms');
+    // Completed worker: x does nothing.
+    view.handleInput('\x1b[B');
+    view.handleInput('x'); view.handleInput('x');
+    assert.deepEqual(cancelled, [1]);
+    // Detail view cancels the open worker.
+    view.handleInput('\x1b[A'); view.handleInput('\t');
+    assert.match(view.render(80).join('\n'), /#1 general/);
+    view.handleInput('x');
+    assert.match(view.render(80).join('\n'), /x again cancels #1/);
+    view.handleInput('x');
+    assert.deepEqual(cancelled, [1, 1]);
+  } finally { view.dispose(); }
+});

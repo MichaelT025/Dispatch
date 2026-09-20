@@ -39,6 +39,13 @@ The `extensions/` copies are runtime sources, not development tooling.
   Its complete Apache-2.0 license is retained at
   `extensions/pi-usage/LICENSE`.
 
+## Bundled provider dependency (MIT)
+
+- `pi-commandcode-provider` 0.7.1 — [upstream](https://github.com/patlux/pi-commandcode-provider), MIT.
+  Installed as an npm runtime dependency; its license ships at
+  `node_modules/pi-commandcode-provider/LICENSE`. Dispatch loads it through
+  `extensions/pi-commandcode/index.ts`.
+
 ## Vendored WebUI build (build-time input only)
 
 The release builder copies the already-built WebUI checkout into

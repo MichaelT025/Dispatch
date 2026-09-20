@@ -20,7 +20,7 @@ test('fork disabled-seed list covers delegation, terminal and soft-edit tools', 
 
 test('role tools are exact allowlists; unknown tools never leak into any role', () => {
   const expected = {
-    orchestrator: ['read', 'grep', 'find', 'ls', 'inspect_git', 'fetch_url', 'web_search', 'run_checks', 'read_note', 'list_notes', 'bash', 'edit', 'write', 'write_note', 'delegate'],
+    orchestrator: ['read', 'grep', 'find', 'ls', 'inspect_git', 'fetch_url', 'web_search', 'run_checks', 'read_note', 'list_notes', 'bash', 'edit', 'write', 'write_note', 'delegate', 'await_workers', 'cancel_worker', 'continue_worker'],
     general: ['read', 'grep', 'find', 'ls', 'inspect_git', 'fetch_url', 'web_search', 'run_checks', 'read_note', 'list_notes', 'bash', 'edit', 'write', 'write_note'],
     fast: ['read', 'grep', 'find', 'ls', 'inspect_git', 'fetch_url', 'web_search', 'run_checks', 'read_note', 'list_notes', 'bash', 'edit', 'write', 'write_note'],
     review: ['read', 'grep', 'find', 'ls', 'inspect_git', 'fetch_url', 'web_search', 'run_checks', 'read_note', 'list_notes'],
