@@ -29,6 +29,11 @@ const rolePrompt = (role: string) => readFileSync(path.join(root, 'roles', `${ro
 const result = (text: string, details: any = {}) => ({ content: [{ type: 'text' as const, text }], details });
 
 export default function (pi: ExtensionAPI) {
+  pi.registerCommand('exit', {
+    description: 'Exit Dispatch (alias for /quit)',
+    handler: async (_args, ctx) => { ctx.shutdown(); },
+  });
+
   let runtime: Promise<ModelRuntime> | undefined;
   // Cross-session role preferences live next to PiAstra run data. Unit tests
   // inject their own store; runtimes persist to <agentDir>/piastra/agents.json.

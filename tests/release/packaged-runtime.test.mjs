@@ -34,6 +34,7 @@ const MANAGED_ENTRIES = [
   'extensions/pi-compact-transcript/index.ts',
   'extensions/pi-atelier/extensions/index.ts',
   'extensions/pi-todo/index.ts',
+  'extensions/pi-commandcode/index.ts',
 ];
 const LEGACY_DEPS = ['@agegr/pi-web', 'pi-web-ui', 'tau-mirror'];
 

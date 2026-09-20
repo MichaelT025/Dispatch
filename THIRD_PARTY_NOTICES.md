@@ -28,6 +28,13 @@ The `extensions/` copies are runtime sources, not development tooling.
 - `extensions/piastra/` and `extensions/pi-ui/` are original Dispatch code
   under MIT; they ship alongside the forks above.
 
+## Bundled provider dependency (MIT)
+
+- `pi-commandcode-provider` 0.7.1 — [upstream](https://github.com/patlux/pi-commandcode-provider), MIT.
+  Installed as an npm runtime dependency; its license ships at
+  `node_modules/pi-commandcode-provider/LICENSE`. Dispatch loads it through
+  `extensions/pi-commandcode/index.ts`.
+
 ## Vendored WebUI build (build-time input only)
 
 The release builder copies the already-built WebUI checkout into

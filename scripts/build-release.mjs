@@ -47,6 +47,7 @@ export const RUNTIME_DEPS = {
   'ipaddr.js': '2.5.0',
   minimatch: '10.2.6',
   'proper-lockfile': '^4.1.2',
+  'pi-commandcode-provider': '0.7.1',
 };
 
 /** Canonical Pi runtime version pinned into the staged manifest. */
@@ -56,7 +57,7 @@ export const PI_RUNTIME_DEP = '@earendil-works/pi-coding-agent';
 /** Legacy/trial packages that must never enter the artifact. */
 export const EXCLUDED_DEPS = ['@agegr/pi-web', 'pi-web-ui', 'tau-mirror'];
 
-/** The seven maintained extension entry points, in established order. */
+/** Managed extension entry points, in established order. */
 export const MANAGED_ENTRIES = [
   'extensions/piastra/index.ts',
   'extensions/pi-ui/index.ts',
@@ -65,6 +66,7 @@ export const MANAGED_ENTRIES = [
   'extensions/pi-compact-transcript/index.ts',
   'extensions/pi-atelier/extensions/index.ts',
   'extensions/pi-todo/index.ts',
+  'extensions/pi-commandcode/index.ts',
 ];
 
 /** Extension trees copied recursively (filtered, see runtimeFilter). */
@@ -76,6 +78,7 @@ export const MANAGED_TREES = [
   'extensions/pi-compact-transcript',
   'extensions/pi-atelier',
   'extensions/pi-todo',
+  'extensions/pi-commandcode',
 ];
 
 /** Maintained fork licenses that must exist and ship. */
