@@ -10,6 +10,7 @@ Working on Dispatch itself. Users should follow [Getting started](GETTING_STARTE
 | `lib/` | Launcher internals: CLI dispatch, setup wizard, isolated state paths, update check/`dispatch update`, browser open, terminal prompts. Pure and dependency-injected for tests. |
 | `extensions/piastra/` | The core Pi extension: roles, `delegate`, worker viewer, help overlay, shortcuts, session titling. |
 | `extensions/pi-worktree/`, `pi-queue/`, `pi-compact-transcript/`, `pi-atelier/`, `pi-todo/`, `pi-ui/` | Maintained forks of upstream Pi extensions, each with its own `LICENSE`/`FORK.md`. |
+| `extensions/pi-usage/` | Standalone account-level subscription usage extension for Codex, OpenCode Go, and Command Code; adapted provider parsing retains its Apache-2.0 `LICENSE` and README. |
 | `roles/` | System prompts per role. |
 | `config/agents.json`, `config/checks.json` | Default model/reasoning per role; trusted `run_checks` commands. |
 | `scripts/build-release.mjs` | Stages the publishable package under `.release/package`. |
@@ -34,6 +35,18 @@ There are two ways to run your working copy:
 **Inside your plain Pi** — `npm run install:cli` (add `-- --atelier` for the Atelier footer) backs up your Pi settings, registers the extensions from this checkout under `~/.pi/agent/piastra/package`, and sets Astra Low as default. Then run `pi` in any project. Re-run after pulling and fully restart Pi (`/reload` is not enough for worktree commands). This modifies your plain Pi configuration; to undo it, remove the Dispatch entries from the `extensions` array in Pi's settings and restore the timestamped backup. `PI_CODING_AGENT_DIR` redirects the target directory.
 
 Running Dispatch Web from source: build the sibling checkout (`npm ci && npm run build` there), then `npm run start:fork` serves it on http://127.0.0.1:8790 with isolated state under `.local/`. `DISPATCH_FORK_DIR` overrides the sibling path.
+
+### Subscription usage extension
+
+`extensions/pi-usage/` is a standalone Pi extension, not a Dispatch Web or
+Usage-Dashboard dependency. Register its `index.ts` when developing the
+extension in a plain Pi. It supports Codex, OpenCode Go, and Command Code,
+contributes `dispatch:subscriptions` for Atelier, and limits polling to
+interactive `ctx.mode === 'tui'` sessions; worker sessions are not polled.
+Refreshes begin immediately and repeat every three minutes, with in-memory
+stale/error state and rate-limit cooldowns. `DISPATCH_USAGE_DISABLED=1`
+disables collection. See its [README](../extensions/pi-usage/README.md) for
+provider auth and the `/usage` commands.
 
 ## Tests
 

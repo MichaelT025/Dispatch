@@ -28,6 +28,17 @@ The `extensions/` copies are runtime sources, not development tooling.
 - `extensions/piastra/` and `extensions/pi-ui/` are original Dispatch code
   under MIT; they ship alongside the forks above.
 
+## Contributed subscription-usage extension (Apache-2.0, retained in place)
+
+- `extensions/pi-usage/` includes provider parsing adapted from
+  **Usage-Dashboard**, upstream commit
+  `e128b1aac3b63590241722c95bbb30951c13f6a3`, under the Apache License 2.0.
+  The extension is substantially modified for standalone Pi use: Dispatch
+  provider adapters, native authentication, TUI-only polling, in-memory
+  stale/error handling, and the `dispatch:subscriptions` sidebar protocol.
+  Its complete Apache-2.0 license is retained at
+  `extensions/pi-usage/LICENSE`.
+
 ## Bundled provider dependency (MIT)
 
 - `pi-commandcode-provider` 0.7.1 — [upstream](https://github.com/patlux/pi-commandcode-provider), MIT.
