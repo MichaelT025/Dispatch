@@ -8,7 +8,7 @@ Every session has one active role. `/agent` opens the picker (`/agent orchestrat
 
 | Role | Model | Owns | Access |
 | --- | --- | --- | --- |
-| Orchestrator | Astra, Low | Your conversation, planning, delegation, milestone review, final verification | Read tools, bash/edit/write, `delegate` |
+| Orchestrator | Astra, Low | Your conversation, planning, delegation, milestone review, final verification | Read tools, bash/edit/write, `delegate`, `await_workers`, `cancel_worker`, `continue_worker` |
 | General worker | GLM-5.3-Flash (or Codex when Go is skipped) | Implementation, debugging, repair, running tests | Read/write, shell |
 | Fast worker | DeepSeek V4.1 Flash (or Codex when Go is skipped) | Bounded research, code search, precise edits | Read/write, shell |
 | Review worker | Astra, Medium | Independent Git review of a milestone against its baseline | Read-only tools plus `run_checks` |
@@ -27,8 +27,10 @@ How workers behave:
 
 - Each worker gets a **fresh context** containing only its task and the project instructions — never the parent transcript — and none may delegate further.
 - All tasks in a batch start **concurrently**, editing workers included; there is no worker cap or queue. The orchestrator coordinates file ownership. Provider rate limits still apply.
+- Delegation is **asynchronous**: `delegate` returns as soon as the workers start, and each result comes back into the conversation as a `[dispatch-worker-result]` message that wakes the orchestrator (mid-turn between tool calls, or as a new turn when it is idle). Results finishing within a few hundred milliseconds travel together. The orchestrator can keep working, start more workers, or end its turn while workers run; `await_workers` blocks for specific results when the next step genuinely needs them.
+- `continue_worker` re-prompts a finished worker inside its existing session, so a fix-up or follow-up keeps everything it already read. Worker sessions stay attached until the parent session is resumed or closed. `cancel_worker` stops one running worker; edits it already made stay on disk.
 - Access is enforced by **tool set**: read-only workers have read/find/grep/ls, an argument-restricted Git inspector, web research, shared-note reading and `run_checks`, but no shell, edit or write. Write-capable workers add shell/edit/write. See [Agent tools](agent-tools.md).
-- Cancellation propagates to workers; each has a 15-minute timeout. Model errors are returned as-is, never silently swapped to another model.
+- Stopping the orchestrator's turn does not stop its workers; use `cancel_worker` (or the cancel action in the worker viewer). Each worker task has a 15-minute timeout. Model errors are returned as-is, never silently swapped to another model.
 - Transcripts are saved under `<agent dir>/piastra/runs`; the parent receives a capped summary and the transcript path.
 - Review findings go back to general/fast workers for repair; another review happens only when the findings or later changes justify it. There is no automatic review-until-approved loop.
 - Upstream/in-framework subagent tools are blocked so `delegate` is the single delegation system.
@@ -37,7 +39,7 @@ These are tool restrictions, not an OS sandbox. `run_checks` executes trusted wo
 
 ## Watching workers
 
-While workers run, the main chat shows a single aggregate line (`Workers · … · /workers for details`) and a **Subagents** panel above the editor lists each worker with status and elapsed time (up to 12 rows; finished rows stay until the next run).
+While workers run, the main chat shows a single aggregate line (`Workers · … · /workers for details`) that tracks live status, and a **Subagents** panel above the editor lists each worker with status and elapsed time (up to 12 rows). The panel stays open while any worker is still running, even after the orchestrator's turn ends, and finished rows stay until the next run. Each result lands in the transcript as a **Worker results** card (Ctrl+O expands the full text).
 
 Press **Ctrl+Shift+W** or run **`/workers`** to open the viewer:
 
