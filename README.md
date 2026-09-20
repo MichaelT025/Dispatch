@@ -7,6 +7,10 @@
 
 Dispatch is a coding-agent setup built on [Pi](https://github.com/earendil-works/pi-coding-agent). An **orchestrator** (Astra) talks to you, plans the work, and delegates it to parallel **workers** — general coders, fast helpers, and an independent **reviewer** — each running in its own isolated context. It ships as one npm package with a terminal CLI, a browser UI (Dispatch Web), and a bundle of maintained Pi extensions (worktree sessions, message queueing, TODOs, the Atelier sidebar, and more).
 
+The bundled [Command Code provider](docs/RELEASE_README.md#command-code-provider)
+adds Command Code models without a separate install. Authenticate using `/login`
+→ **Use a subscription → Command Code**, or set `COMMAND_CODE_API_KEY`.
+
 Docs:
 
 - [Getting started](docs/GETTING_STARTED.md) — install, first-run setup, launching, updating, uninstalling.
