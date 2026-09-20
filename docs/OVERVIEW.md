@@ -65,7 +65,7 @@ Switching starts a brand-new empty session in the target worktree and moves the 
 
 Housekeeping:
 
-- **Auto-titles.** After the first assistant reply of an unnamed session, the `fast` role's model produces a 3–6 word title, stored exactly as `/name` would. It never overwrites a name you set and skips worker transcripts. Set `"autoTitle": false` in `config/agents.json` to turn it off.
+- **Auto-titles.** After the first assistant reply of an unnamed session, the `fast` role's model produces a 3–6 word title, stored exactly as `/name` would. It never overwrites a name you set and skips worker transcripts. Set `"autoTitle": false` in `config/agents.json` to turn it off. Use `/rename` while idle to generate a replacement title from the active branch's first user message and assistant reply, even when auto-titles are disabled. `/name <title>` stays available for manual naming.
 - **No empty sessions.** A session that never received a message is deleted when its runtime shuts down; `/wt resume` sweeps older leftovers.
 
 ## Other commands

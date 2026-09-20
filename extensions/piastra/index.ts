@@ -17,7 +17,7 @@ import { createWorkerSidebar } from './sidebar.mjs';
 import { createSessionPhaseGuard, finalizeOutstandingWorkers, registerWorkerGuard, sessionPhaseGuardMessage, settleWorkerBatch, workerGuardMessage } from './guard.mjs';
 import { installShortcuts } from './shortcuts.ts';
 import { createWorkerBridge } from './worker-bridge.mjs';
-import { createAutoTitler } from './session-title.mjs';
+import { completeTitle, createAutoTitler } from './session-title.mjs';
 import { removeEmptySession } from '../pi-worktree/empty-sessions.mjs';
 import { createWorkerPanel } from './worker-panel.ts';
 import { formatHelp, formatTerminalHelp, helpSections, sectionIds } from './help.mjs';
@@ -81,7 +81,7 @@ export default function (pi: ExtensionAPI) {
   // Title unnamed sessions after their first reply with the fast role's model
   // (config/agents.json "autoTitle": false turns it off). Worker transcripts
   // under piastra/runs are never titled.
-  createAutoTitler(pi, {
+  const titler = createAutoTitler(pi, {
     enabled: config.autoTitle !== false,
     isWorkerSession: (ctx: any) => /[\\/]piastra[\\/]runs[\\/]/.test(ctx?.sessionManager?.getSessionFile?.() || ''),
     resolveModel: async (ctx: any) => {
@@ -93,7 +93,16 @@ export default function (pi: ExtensionAPI) {
       }
       return ctx.model;
     },
-    complete: (model: any, context: any, ctx: any) => ctx.modelRegistry.complete(model, context, { maxTokens: 32, temperature: 0.2 })
+    complete: (model: any, context: any, ctx: any) => completeTitle(model, context, ctx),
+    onError: (error: any, ctx: any, explicit: boolean) => {
+      const detail = error?.message || String(error);
+      if (explicit) ctx?.ui?.notify?.(`Session rename failed: ${detail}`, 'error');
+      else ctx?.ui?.notify?.(`Automatic session title failed: ${detail}. It will retry after the next response.`, 'warning');
+    }
+  });
+  pi.registerCommand('rename', {
+    description: 'Regenerate the automatic session title (use /name for a manual name)',
+    handler: titler.rename,
   });
   let nextWorkerId = 0;
   let viewerOpen = false;
