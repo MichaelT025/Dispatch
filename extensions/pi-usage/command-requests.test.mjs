@@ -58,20 +58,30 @@ test('sequences account requests, shares orgId, and sends normalized billing sin
   assert.equal(result.usage.periodBasis, 'billing-period');
 });
 
-test('requires a nonempty org.id and never falls back to another identity field', async () => {
-  const calls = [];
-  await assert.rejects(
-    fetchCommandCodePayloads({
+test('omits orgId when whoami has no usable organization, without using another identity', async () => {
+  for (const org of [null, undefined, {}, { id: '  ' }, { id: 123 }]) {
+    const calls = [];
+    const credits = { credits: { monthlyCredits: 4 } };
+    const result = await fetchCommandCodePayloads({
       token: 'secret-token',
       signal: new AbortController().signal,
       fetch: async (url) => {
         calls.push(url);
-        return jsonResponse({ id: 'wrong-account', org: { id: '  ' } });
+        if (url.endsWith('/whoami')) return jsonResponse({ id: 'wrong-account', user: { id: 'wrong-user' }, org });
+        if (url.includes('/credits')) return jsonResponse(credits);
+        if (url.includes('/subscriptions')) return jsonResponse({ data: null });
+        return jsonResponse({ totalCount: 1 });
       },
-    }),
-    (error) => error.code === 'PARSE' && error.message === 'PARSE',
-  );
-  assert.deepEqual(calls, ['https://api.commandcode.ai/alpha/whoami']);
+    });
+    assert.deepEqual(calls, [
+      'https://api.commandcode.ai/alpha/whoami',
+      'https://api.commandcode.ai/alpha/billing/credits',
+      'https://api.commandcode.ai/alpha/billing/subscriptions',
+      'https://api.commandcode.ai/alpha/usage/summary',
+    ]);
+    assert.deepEqual(result.credits, credits);
+    assert.deepEqual(result.usage, { totalCount: 1 });
+  }
 });
 
 test('does not send since or add billing-period without a valid period start', async () => {
