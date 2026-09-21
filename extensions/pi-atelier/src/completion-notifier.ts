@@ -1,6 +1,6 @@
 import { spawn as nodeSpawn, type SpawnOptions } from "node:child_process";
 
-export type CompletionNotificationKind = "turn-settled" | "input-requested";
+export type CompletionNotificationKind = "turn-settled" | "run-failed" | "input-requested";
 
 export interface CompletionNotification {
 	kind: CompletionNotificationKind;
@@ -32,6 +32,7 @@ export interface CompletionNotifier {
 	runStarted(): void;
 	inputRequested(toolCallId: string, notification: CompletionNotification): void;
 	turnSettled(notification: CompletionNotification): void;
+	runFailed(notification: CompletionNotification): void;
 	reset(): void;
 }
 
@@ -50,8 +51,11 @@ const WINDOWS_TOAST_SCRIPT = [
 	"$texts = $xml.GetElementsByTagName('text')",
 	"$texts.Item(0).AppendChild($xml.CreateTextNode($env:PI_ATELIER_NOTIFICATION_TITLE)) > $null",
 	"$texts.Item(1).AppendChild($xml.CreateTextNode($env:PI_ATELIER_NOTIFICATION_BODY)) > $null",
+	"$audio = $xml.CreateElement('audio')",
+	"$audio.SetAttribute('silent', 'true')",
+	"$xml.DocumentElement.AppendChild($audio) > $null",
 	"$toast = [Windows.UI.Notifications.ToastNotification]::new($xml)",
-	"[Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('Pi Atelier').Show($toast)",
+	"[Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('Dispatch').Show($toast)",
 ].join("; ");
 
 const defaultSpawn: SpawnNotificationProcess = (command, args, options) => nodeSpawn(command, args, options);
@@ -90,6 +94,11 @@ export function createCompletionNotifier(options: CompletionNotifierOptions): Co
 			settledNotified = true;
 			deliver({ ...notification, kind: "turn-settled" });
 		},
+		runFailed(notification) {
+			if (settledNotified) return;
+			settledNotified = true;
+			deliver({ ...notification, kind: "run-failed" });
+		},
 		reset() {
 			settledNotified = false;
 			inputRequests = new Set<string>();
@@ -101,14 +110,20 @@ export function createCompletionNotifier(options: CompletionNotifierOptions): Co
 
 export function formatTitle(notification: CompletionNotification): string {
 	const project = sanitize(notification.projectName, 80);
-	return project.length > 0 ? `Pi Atelier · ${project}` : "Pi Atelier";
+	return project.length > 0 ? `Dispatch · ${project}` : "Dispatch";
 }
 
 export function formatBody(notification: CompletionNotification): string {
-	const parts = [notification.kind === "input-requested" ? "Input requested" : "Turn settled"];
+	const parts = [
+		notification.kind === "input-requested"
+			? "Input requested"
+			: notification.kind === "run-failed"
+				? "Run failed"
+				: "Turn settled",
+	];
 	const session = sanitize(notification.sessionName ?? "", 100);
 	if (session.length > 0) parts.push(session);
-	if (notification.kind === "turn-settled") {
+	if (notification.kind === "turn-settled" || notification.kind === "run-failed") {
 		const completed = normalizeCount(notification.completedToolCount);
 		const failed = normalizeCount(notification.failedToolCount);
 		if (completed > 0) parts.push(`${completed} done`);
@@ -129,6 +144,15 @@ function deliverSystemNotification(
 			spawn,
 			"osascript",
 			[...APPLE_SCRIPT.flatMap((line) => ["-e", line]), "--", title, body],
+			{},
+			onFinished,
+		);
+	}
+	if (platform === "linux") {
+		return spawnDetached(
+			spawn,
+			"notify-send",
+			["--hint", "boolean:suppress-sound:true", title, body],
 			{},
 			onFinished,
 		);
