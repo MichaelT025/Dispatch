@@ -16,6 +16,7 @@ Docs:
 - [Getting started](docs/GETTING_STARTED.md) — install, first-run setup, launching, updating, uninstalling.
 - [How Dispatch works](docs/OVERVIEW.md) — roles, delegation, watching workers, sessions and worktrees, Dispatch Web.
 - [Keyboard shortcuts](docs/shortcuts.md) · [Agent tools](docs/agent-tools.md) · [Terminal appearance and sidebar](docs/pi-ui.md)
+- [Notifications](docs/NOTIFICATIONS.md) — CLI desktop alerts and background-only browser notifications.
 - [Development](docs/DEVELOPMENT.md) — repository layout, tests, CI, building and publishing a release.
 
 ## Requirements

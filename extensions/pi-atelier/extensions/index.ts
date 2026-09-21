@@ -24,6 +24,18 @@ import {
 	openDisplaySettingsWorkspace,
 } from "../src/menu.js";
 import { createRunActivityTracker, type RunActivityTracker } from "../src/run-activity.js";
+import {
+	askUserInputChanged,
+	createNotificationRunState,
+	inputPromptEnded,
+	inputPromptStarted,
+	inputRequestKey,
+	settleNotificationRun,
+	startNotificationRun,
+	trackAgentEnd,
+	trackAssistantMessage,
+	type NotificationRunState,
+} from "../src/notification-policy.js";
 import type { SidebarPanelSetting } from "../src/settings-workspace.js";
 import {
 	buildSidebarSnapshot,
@@ -118,7 +130,7 @@ interface ActiveSession {
 	retired: boolean;
 	unsubscribeAskUserBlocked: (() => void) | undefined;
 	askUserBlocked: boolean;
-	inputRequestSequence: number;
+	notificationRun: NotificationRunState;
 	todos: NormalizedTodo[];
 	requestFooterRender: () => void;
 	extensionStatuses: readonly string[];
@@ -309,7 +321,9 @@ export default function atelierExtension(
 
 	function getActiveSession(ctx: ExtensionContext | undefined): ActiveSession | undefined {
 		const current = activeSession;
-		return current && contextUsesSessionManager(ctx, current.sessionManager) ? current : undefined;
+		return current && ctx?.mode === "tui" && contextUsesSessionManager(ctx, current.sessionManager)
+			? current
+			: undefined;
 	}
 
 	function clearFooter(session: ActiveSession, shouldClear: boolean): void {
@@ -345,7 +359,7 @@ export default function atelierExtension(
 		session.todos = [];
 		session.extensionStatuses = [];
 		session.askUserBlocked = false;
-		session.inputRequestSequence = 0;
+		session.notificationRun = createNotificationRunState();
 		session.requestFooterRender = noopRender;
 		const cleanup = (action: () => void): void => {
 			try {
@@ -421,6 +435,33 @@ export default function atelierExtension(
 			...(snapshot === undefined ? {} : { completedToolCount: snapshot.completedCount }),
 			...(snapshot === undefined ? {} : { failedToolCount: snapshot.failedCount }),
 		};
+	}
+
+	function queryActiveDispatchWorkers(): number {
+		const query: { type: "query"; active?: number } = { type: "query" };
+		try {
+			pi.events.emit("piastra:worker-guard", query);
+		} catch {
+			// Worker guard integration is optional; without PiAstra there are no workers.
+		}
+		return typeof query.active === "number" && Number.isFinite(query.active) ? Math.max(0, query.active) : 0;
+	}
+
+	function hasPendingMessages(ctx: ExtensionContext): boolean {
+		try {
+			return ctx.hasPendingMessages() === true;
+		} catch {
+			// If the host cannot answer, fail closed rather than notifying before queued work runs.
+			return true;
+		}
+	}
+
+	function notifyInputRequested(targetSession: ActiveSession, firstInSpan: boolean): void {
+		if (!firstInSpan) return;
+		targetSession.completionNotifier.inputRequested(
+			inputRequestKey(targetSession.notificationRun),
+			completionNotification(targetSession.ctx, "input-requested", targetSession.runActivity.getSnapshot()),
+		);
 	}
 
 	function getSidebarPanelSettings(targetSession: ActiveSession): readonly SidebarPanelSetting[] {
@@ -735,6 +776,8 @@ export default function atelierExtension(
 			const candidateCompletionNotifier = createCompletionNotifier({
 				isEnabled: () =>
 					enabled &&
+					initializationContext.mode === "tui" &&
+					activeSession?.ctx.mode === "tui" &&
 					activeSession?.token === initializationToken &&
 					candidateRuntime.getConfig().completionNotifications,
 				...(dependencies.notificationPlatform === undefined
@@ -791,7 +834,7 @@ export default function atelierExtension(
 				retired: false,
 				unsubscribeAskUserBlocked: undefined,
 				askUserBlocked: false,
-				inputRequestSequence: 0,
+				notificationRun: createNotificationRunState(),
 				todos: reconstructTodos(initializationContext),
 				requestFooterRender: noopRender,
 				extensionStatuses: [],
@@ -805,15 +848,12 @@ export default function atelierExtension(
 				const active = (data as { active?: unknown }).active;
 				if (active === false) {
 					current.askUserBlocked = false;
+					notifyInputRequested(current, askUserInputChanged(current.notificationRun, false));
 					return;
 				}
 				if (active !== true || current.askUserBlocked) return;
 				current.askUserBlocked = true;
-				current.inputRequestSequence += 1;
-				current.completionNotifier.inputRequested(
-					`blocked-${current.inputRequestSequence}`,
-					completionNotification(current.ctx, "input-requested", current.runActivity.getSnapshot()),
-				);
+				notifyInputRequested(current, askUserInputChanged(current.notificationRun, true));
 			});
 			if (!isFresh()) {
 				disposeSession(nextSession);
@@ -912,6 +952,8 @@ export default function atelierExtension(
 	pi.on("agent_start", (_event, ctx) => {
 		const current = getActiveSession(ctx);
 		if (!current) return;
+		startNotificationRun(current.notificationRun);
+		current.askUserBlocked = false;
 		current.runActivity.startRun();
 		current.completionNotifier.runStarted();
 		current.runtime.setActivity("working");
@@ -920,7 +962,6 @@ export default function atelierExtension(
 		const current = getActiveSession(ctx);
 		if (!current) return;
 		current.runActivity.startTurn(event.turnIndex);
-		current.completionNotifier.runStarted();
 		current.runtime.scheduleWorkspacePulseRefresh();
 	});
 	pi.on("before_provider_request", (_event, ctx) => {
@@ -933,7 +974,25 @@ export default function atelierExtension(
 	});
 	pi.on("message_end", (event, ctx) => {
 		if (event.message.role !== "assistant") return;
-		getActiveSession(ctx)?.runActivity.finishResponse(event.message.usage.output);
+		const current = getActiveSession(ctx);
+		if (!current) return;
+		trackAssistantMessage(current.notificationRun, event.message);
+		current.runActivity.finishResponse(event.message.usage.output);
+	});
+	pi.on("agent_end", (event, ctx) => {
+		const current = getActiveSession(ctx);
+		if (!current) return;
+		trackAgentEnd(current.notificationRun, event);
+	});
+	pi.on("ui_prompt_start", (_event, ctx) => {
+		const current = getActiveSession(ctx);
+		if (!current) return;
+		notifyInputRequested(current, inputPromptStarted(current.notificationRun));
+	});
+	pi.on("ui_prompt_end", (_event, ctx) => {
+		const current = getActiveSession(ctx);
+		if (!current) return;
+		inputPromptEnded(current.notificationRun);
 	});
 	pi.on("tool_execution_start", (event, ctx) => {
 		getActiveSession(ctx)?.runActivity.startTool(event);
@@ -974,13 +1033,20 @@ export default function atelierExtension(
 	});
 	pi.on("agent_settled", (_event, ctx) => {
 		const current = getActiveSession(ctx);
-		if (!current || !ctx.isIdle()) return;
+		if (!current) return;
+		const outcome = settleNotificationRun(current.notificationRun, {
+			isIdle: ctx.isIdle(),
+			hasPendingMessages: hasPendingMessages(ctx),
+			activeWorkers: queryActiveDispatchWorkers(),
+		});
+		if (outcome === undefined) return;
+		current.askUserBlocked = false;
 		current.runActivity.settle();
 		current.runtime.setActivity("ready");
 		current.sidebar.requestRender();
-		current.completionNotifier.turnSettled(
-			completionNotification(current.ctx, "turn-settled", current.runActivity.getSnapshot()),
-		);
+		const notification = completionNotification(current.ctx, "turn-settled", current.runActivity.getSnapshot());
+		if (outcome === "failed") current.completionNotifier.runFailed(notification);
+		else if (outcome === "success") current.completionNotifier.turnSettled(notification);
 	});
 	pi.on("turn_end", async (_event, ctx) => {
 		const current = getActiveSession(ctx);
