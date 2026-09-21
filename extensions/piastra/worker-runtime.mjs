@@ -8,6 +8,8 @@
 // the orchestrator once, not once per worker. `await_workers` and
 // `cancel_worker` return results directly and take them out of the queue so a
 // result never reaches the model twice.
+import { formatFileEvidence, formatStoppingPoint } from './worker-evidence.mjs';
+
 export const WORKER_RESULT_TYPE = 'dispatch-worker-result';
 export const WORKER_TOOL_NAMES = ['delegate', 'await_workers', 'cancel_worker', 'continue_worker'];
 export const RESULT_TEXT_LIMIT = 12000;
@@ -22,7 +24,7 @@ export function formatWorkerResult(result) {
   const text = String(result.text ?? '');
   const capped = text.length > RESULT_TEXT_LIMIT ? `${text.slice(0, RESULT_TEXT_LIMIT)}\n[Truncated; see transcript.]` : text;
   const status = result.status || (result.ok ? 'completed' : 'failed');
-  return `#${result.id} ${result.role} · ${result.model} · ${status === 'completed' ? 'completed' : status.toUpperCase()}${result.elapsed ? ` · ${result.elapsed}` : ''}\n${capped}\nTranscript: ${result.transcript || '(none)'}`;
+  return `#${result.id} ${result.role} · ${result.model} · ${status === 'completed' ? 'completed' : status.toUpperCase()}${result.elapsed ? ` · ${result.elapsed}` : ''}\n${capped}${result.stoppingPoint ? `\n${formatStoppingPoint(result.stoppingPoint)}` : ''}${result.fileEvidence ? `\n${formatFileEvidence(result.fileEvidence)}` : ''}\nTranscript: ${result.transcript || '(none)'}`;
 }
 
 export function formatWorkerResults(results) {

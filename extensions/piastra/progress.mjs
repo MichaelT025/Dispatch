@@ -10,11 +10,19 @@ export function trackEvent(worker, event) {
   let line;
   if (event.type === 'tool_execution_start') {
     const args = event.args || {};
-    const target = args.path || args.file_path || args.command || args.url || [args.operation, args.revision].filter(Boolean).join(' ') || args.pattern || '';
+    const target = args.path || args.file_path || args.command || args.url || [args.operation, args.revision].filter(Boolean).join(' ') || args.pattern || args.name || '';
     line = `→ ${event.toolName} ${clean(target).slice(0, 220)}`.trim();
     worker.activity = line;
+    worker.pendingTools ??= {};
+    worker.pendingTools[event.toolCallId] = { description: line, path: args.path || args.file_path, name: event.toolName };
   } else if (event.type === 'tool_execution_end') {
-    line = `${event.isError ? '✗' : '✓'} ${event.toolName}`;
+    const pending = worker.pendingTools?.[event.toolCallId];
+    const target = pending?.path || event.args?.path || event.args?.file_path;
+    if (!event.isError && ['edit', 'write'].includes(event.toolName) && typeof target === 'string') {
+      worker.changedFiles = [...new Set([...(worker.changedFiles || []), target])];
+    }
+    if (worker.pendingTools) delete worker.pendingTools[event.toolCallId];
+    line = `${event.isError ? '✗' : '✓'} ${event.toolName}${target ? ` ${clean(target)}` : ''}`;
     const text = event.result?.content?.filter(c => c.type === 'text').map(c => c.text).join(' ') || '';
     if (text) line += `: ${clean(text).slice(0, 300)}`;
     worker.activity = `${event.toolName} ${event.isError ? 'failed' : 'finished'}; thinking…`;

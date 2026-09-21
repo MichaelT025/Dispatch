@@ -8,6 +8,7 @@ import { UPSTREAM_DELEGATION_TOOLS, validateTasks } from './policy.mjs';
 import { createCustomTools } from './custom-tools.ts';
 import { createNotes } from './notes.mjs';
 import { makeWorker, trackEvent, cleanTask } from './progress.mjs';
+import { stoppingPoint, collectFileEvidence } from './worker-evidence.mjs';
 import { WORKER_RESULT_TYPE, createCompletionQueue, formatElapsed, formatStarted, formatWorkerResults, mergeRestoredWorkers } from './worker-runtime.mjs';
 import { Text } from '@earendil-works/pi-tui';
 import { createWorkerView, workerOverlayOptions } from './worker-view.ts';
@@ -285,11 +286,12 @@ Shared session notes: use list_notes/read_note to reuse earlier findings. ${acce
     try { record?.session?.dispose?.(); } catch { /* teardown must not throw */ }
     if (record) record.session = undefined;
   };
-  const finish = (record: any, worker: any, status: string, text: string) => {
+  const finish = async (record: any, worker: any, status: string, text: string, cwd: string, stopped?: any) => {
+    const fileEvidence = await collectFileEvidence(worker, cwd);
     worker.status = status;
     worker.ended = Date.now();
     worker.activity = status === 'completed' ? 'Finished' : text;
-    const result = { id: worker.id, role: worker.role, model: worker.model, status, ok: status === 'completed', text, transcript: worker.transcript, elapsed: formatElapsed(worker) };
+    const result = { id: worker.id, role: worker.role, model: worker.model, status, ok: status === 'completed', text, transcript: worker.transcript, elapsed: formatElapsed(worker), stoppingPoint: stopped, fileEvidence };
     record.result = result;
     // Queue first, resolve second: an await_workers/cancel_worker continuation
     // then finds the result still buffered and takes it before the flush.
@@ -316,7 +318,8 @@ Shared session notes: use list_notes/read_note to reuse earlier findings. ${acce
     const parentSessionId = record.parentSessionId;
     const trusted = record.trusted;
     let abort: (() => void) | undefined;
-    const timeout = AbortSignal.timeout(15 * 60 * 1000);
+    let stopped: ReturnType<typeof stoppingPoint> | undefined;
+    const timeout = AbortSignal.timeout(20 * 60 * 1000);
     const own = new AbortController();
     record.cancel = () => own.abort(new Error('Cancelled by the user.'));
     const cancel = AbortSignal.any([timeout, own.signal]);
@@ -350,16 +353,16 @@ Shared session notes: use list_notes/read_note to reuse earlier findings. ${acce
       worker.status = 'running';
       worker.activity = 'Thinking…';
       publishSafely();
-      abort = () => { void session.abort(); };
+      abort = () => { stopped = stoppingPoint(worker); void session.abort(); };
       cancel.addEventListener('abort', abort, { once: true }); cancel.throwIfAborted();
       await session.prompt(prompt);
       cancel.throwIfAborted();
       const last = [...session.state.messages].reverse().find((m: any) => m.role === 'assistant');
       if (!last || ['error', 'aborted'].includes(last.stopReason)) throw new Error(last?.errorMessage || 'Worker returned no successful final response.');
       const text = last.content.filter((c: any) => c.type === 'text').map((c: any) => c.text).join('\n');
-      finish(record, worker, 'completed', text);
+      await finish(record, worker, 'completed', text, ctx.cwd);
     } catch (error: any) {
-      finish(record, worker, cancel.aborted ? 'cancelled' : 'failed', error?.message || String(error));
+      await finish(record, worker, cancel.aborted ? 'cancelled' : 'failed', timeout.aborted ? 'Worker timed out after 20 minutes.' : error?.message || String(error), ctx.cwd, stopped || stoppingPoint(worker));
     } finally {
       if (abort) cancel.removeEventListener('abort', abort);
       record.cancel = undefined;
@@ -532,7 +535,7 @@ Shared session notes: use list_notes/read_note to reuse earlier findings. ${acce
       if (!record.session) throw new Error(`Worker #${params.id} has no attached session (it finished before a resume or failed before starting). Delegate a new worker.`);
       const notes = createNotes(getAgentDir(), record.parentSessionId);
       const worker = record.worker;
-      Object.assign(worker, { toolCallId, status: 'starting', activity: 'Continuing…', started: Date.now(), ended: undefined, recent: [], text: '' });
+      Object.assign(worker, { toolCallId, status: 'starting', activity: 'Continuing…', started: Date.now(), ended: undefined, recent: [], text: '', pendingTools: {}, changedFiles: [] });
       worker.task = `${worker.task}\n\nContinued: ${cleanTask(params.task)}`;
       record.result = undefined;
       armDone(record);

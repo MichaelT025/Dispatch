@@ -283,6 +283,7 @@ test('agent_settled with ctx.isIdle() keeps the run open while a worker is still
   // remounts and shows only the new worker.
   await withRuntimePatch(unavailableModelRuntime, () =>
     delegate.execute('call-next', { tasks: [{ role: 'fast', access: 'read', task: 'PANEL-TASK-NEXT' }] }, undefined, () => {}, ctx));
+  await untilSent(pi, 2);
   const nextText = widgetText();
   assert.match(nextText, /Subagents \(1\/1\)/);
   assert.match(nextText, /✗ fast \d+s/);
