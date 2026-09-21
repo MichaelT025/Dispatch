@@ -16,7 +16,7 @@ test('retained upstream offline unit tests', { timeout: 125_000 }, (t) => {
   // The parent's node:test IPC marker must not suppress the nested runner.
   delete env.NODE_TEST_CONTEXT;
   const result = spawnSync(process.execPath, [
-    '--experimental-transform-types', '--test',
+    '--experimental-transform-types', '--test', '--test-reporter=tap',
     ...files.map(file => fileURLToPath(new URL(file, import.meta.url))),
   ], { env, encoding: 'utf8', timeout: 120_000, maxBuffer: 8 * 1024 * 1024 });
   assert.equal(result.status, 0, `${result.error ?? ''}\n${result.stdout}\n${result.stderr}`);

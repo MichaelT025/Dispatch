@@ -8,6 +8,7 @@ import { after, before, beforeEach, describe, it } from "node:test"
 import {
   collectEvents,
   createTestDeps,
+  createTestEventStream,
   makeContext,
   makeModel,
   startMockCommandCodeServer,
@@ -58,17 +59,32 @@ describe("streamCommandCode — abort behavior", () => {
       type: "success",
       events: [JSON.stringify({ type: "text-delta", text: "first" })],
       hangAfterLast: true,
+      // Exercise a response slower than the old 50ms abort timer.
+      responseDelay: 100,
     })
     const controller = new AbortController()
-    const { streamCommandCode } = createTestDeps({ apiBase: server.baseUrl() })
+    const { streamCommandCode } = createTestDeps({
+      apiBase: server.baseUrl(),
+      createStream: () => {
+        const stream = createTestEventStream()
+        const push = stream.push.bind(stream)
+        stream.push = (event) => {
+          push(event)
+          if (event.type === "text_delta") controller.abort()
+        }
+        return stream
+      },
+    })
 
     const stream = streamCommandCode(makeModel(), makeContext(), {
       apiKey: "mock-key",
       signal: controller.signal,
     })
 
-    setTimeout(() => controller.abort(), 50)
-    const events = await collectEvents(stream, 2_000)
+    const events = await collectEvents(stream, 5_000).finally(() => {
+      // Also release a hanging mock response if collection times out.
+      controller.abort()
+    })
 
     assert.ok(
       events.some((event) => event.type === "text_delta"),
@@ -79,7 +95,10 @@ describe("streamCommandCode — abort behavior", () => {
     if (error?.type !== "error") throw new Error("expected error")
     assert.equal(error.reason, "aborted")
     assert.equal(error.error.errorMessage, "Request aborted")
-    await new Promise((resolve) => setTimeout(resolve, 50))
+    const deadline = Date.now() + 5_000
+    while (!server.responseClosedBeforeEnd() && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 10))
+    }
     assert.ok(server.responseClosedBeforeEnd(), "abort should close the hanging upstream response")
   })
 })
