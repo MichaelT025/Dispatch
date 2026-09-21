@@ -316,7 +316,7 @@ Shared session notes: use list_notes/read_note to reuse earlier findings. ${acce
     const parentSessionId = record.parentSessionId;
     const trusted = record.trusted;
     let abort: (() => void) | undefined;
-    const timeout = AbortSignal.timeout(15 * 60 * 1000);
+    const timeout = AbortSignal.timeout(20 * 60 * 1000);
     const own = new AbortController();
     record.cancel = () => own.abort(new Error('Cancelled by the user.'));
     const cancel = AbortSignal.any([timeout, own.signal]);
