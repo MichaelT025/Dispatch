@@ -324,6 +324,73 @@ test('async delegation: delegate returns started workers, results arrive as one 
   for (const handler of pi.handlers.get('session_shutdown') || []) await handler({}, ctx);
 });
 
+test('timeout delivers pre-abort stopping point and file evidence; continuation resets it', async t => {
+  const dir = await mkdtemp(join(tmpdir(), 'dispatch-timeout-'));
+  const originalDir = process.env.PI_CODING_AGENT_DIR;
+  process.env.PI_CODING_AGENT_DIR = dir;
+  t.after(async () => {
+    if (originalDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = originalDir;
+    await rm(dir, { recursive: true, force: true });
+  });
+  const models = await ModelRuntime.create({ authPath: join(dir, 'auth.json'), modelsPath: join(dir, 'models.json'),
+    modelsStorePath: join(dir, 'models-store.json'), allowModelNetwork: false });
+  models.getModel = () => ({ id: 'offline', name: 'Offline', provider: 'test', api: 'openai-completions', baseUrl: 'http://unused.invalid',
+    reasoning: false, input: ['text'], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 8192, maxTokens: 1024 });
+  t.mock.method(ModelRuntime, 'create', async () => models);
+  const deadline = new AbortController();
+  const originalTimeout = AbortSignal.timeout;
+  let deadlines = 0;
+  t.mock.method(AbortSignal, 'timeout', ms => {
+    if (ms !== 20 * 60 * 1000) return originalTimeout(ms);
+    deadlines++;
+    return deadlines === 1 ? deadline.signal : new AbortController().signal;
+  });
+  let release;
+  let prompts = 0;
+  t.mock.method(AgentSession.prototype, 'prompt', async function () {
+    if (++prompts > 1) {
+      this.agent.state.messages.push({ role: 'assistant', content: [{ type: 'text', text: 'Continued successfully' }], stopReason: 'stop' });
+      return;
+    }
+    this._emit({ type: 'tool_execution_start', toolCallId: 'edit1', toolName: 'edit', args: { path: 'extensions/piastra/progress.mjs' } });
+    this._emit({ type: 'tool_execution_end', toolCallId: 'edit1', toolName: 'edit', isError: false });
+    this._emit({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: 'Now checking the tests' } });
+    this._emit({ type: 'tool_execution_start', toolCallId: 'check1', toolName: 'run_checks', args: { name: 'test' } });
+    const pending = new Promise(resolve => { release = resolve; });
+    deadline.abort(new Error('Synthetic deadline'));
+    await pending;
+  });
+  t.mock.method(AgentSession.prototype, 'abort', async function () {
+    // Abort teardown can overwrite live activity: the result must retain the
+    // snapshot from immediately before this event.
+    this._emit({ type: 'tool_execution_end', toolCallId: 'check1', toolName: 'run_checks', isError: true });
+    release();
+  });
+  const extension = await import(pathToFileURL(join(root, 'extensions', 'piastra', 'index.ts')).href);
+  const pi = fakePi(fakeEvents());
+  extension.default(pi);
+  const ctx = { cwd: root, sessionManager: { getSessionId: () => 'timeout-test' }, isProjectTrusted: () => true, isIdle: () => true, ui: { notify() {} } };
+  t.after(async () => { for (const handler of pi.handlers.get('session_shutdown') || []) await handler({}, ctx); });
+  await pi.tools.find(tool => tool.name === 'delegate').execute('timeout-batch', { tasks: [{ role: 'general', access: 'write', task: 'Test timeout' }] }, undefined, undefined, ctx);
+  await untilSent(pi, 1);
+  const result = pi.messages[0].message.details.results[0];
+  assert.equal(result.status, 'cancelled');
+  assert.match(result.text, /timed out after 20 minutes/);
+  assert.match(result.stoppingPoint.pending[0], /run_checks/);
+  assert.match(result.stoppingPoint.partialResponse, /Now checking/);
+  assert.deepEqual(result.fileEvidence.files, ['extensions/piastra/progress.mjs']);
+  assert.match(pi.messages[0].message.content, /Files changed.*progress.mjs/);
+  assert.match(pi.messages[0].message.content, /git diff --stat/);
+  await pi.tools.find(tool => tool.name === 'continue_worker').execute('continue-timeout', { id: 1, task: 'Continue' }, undefined, undefined, ctx);
+  await untilSent(pi, 2);
+  const continued = pi.messages[1].message.details.results[0];
+  assert.equal(continued.status, 'completed');
+  assert.equal(continued.stoppingPoint, undefined);
+  assert.deepEqual(continued.fileEvidence.files, []);
+  assert.equal(deadlines, 2);
+});
+
 test('a rejected worker runtime initialization is reported as a failed result message and releases the guard', async () => {
   const extension = await import(pathToFileURL(join(root, 'extensions', 'piastra', 'index.ts')).href);
   const events = fakeEvents();
