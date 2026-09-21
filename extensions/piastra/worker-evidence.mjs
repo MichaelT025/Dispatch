@@ -1,5 +1,6 @@
 import { execFile } from 'node:child_process';
 import path from 'node:path';
+import { realpath } from 'node:fs/promises';
 
 export function stoppingPoint(worker) {
   return {
@@ -32,8 +33,17 @@ export async function collectFileEvidence(worker, cwd) {
   const files = [...new Set(worker.changedFiles || [])];
   if (!files.length) return { files, stat: '' };
   try {
-    const root = await git(cwd, ['rev-parse', '--show-toplevel']);
-    const paths = files.map(file => path.relative(root, path.resolve(cwd, file)));
+    // Git resolves directory aliases (Windows junctions/short names and
+    // POSIX symlinks). Resolve cwd too before comparing repository paths.
+    const canonicalCwd = await realpath(cwd);
+    const root = await realpath(await git(canonicalCwd, ['rev-parse', '--show-toplevel']));
+    const paths = await Promise.all(files.map(async file => {
+      const target = path.resolve(canonicalCwd, file);
+      // Resolve directory aliases, not a tracked symlink's file target.
+      // A deleted file still needs to appear in the diff stat.
+      const parent = await realpath(path.dirname(target)).catch(() => path.dirname(target));
+      return path.relative(root, path.join(parent, path.basename(target)));
+    }));
     const inside = paths.filter(file => file && file !== '..' && !file.startsWith(`..${path.sep}`) && !path.isAbsolute(file));
     const outside = paths.length - inside.length;
     const stat = inside.length ? await git(root, ['diff', 'HEAD', '--stat', '--', ...inside]) : '';

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, writeFile, rm } from 'node:fs/promises';
+import { mkdtemp, writeFile, rm, mkdir, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
@@ -46,6 +46,30 @@ test('scoped Git evidence includes staged and unstaged changes and identifies un
     assert.doesNotMatch(evidence.stat, /other.txt/);
     assert.deepEqual((await collectFileEvidence({}, cwd)).files, []);
   } finally { await rm(cwd, { recursive: true, force: true }); }
+});
+
+test('Git evidence resolves cwd and absolute file directory aliases', async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), 'dispatch-alias-'));
+  const cwd = path.join(dir, 'repository');
+  const alias = path.join(dir, 'alias');
+  const git = (...args) => execFileSync('git', args, { cwd, windowsHide: true });
+  try {
+    await mkdir(cwd);
+    git('init');
+    await writeFile(path.join(cwd, 'a.txt'), 'before\n');
+    git('add', '.'); git('-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-m', 'baseline');
+    await symlink(cwd, alias, process.platform === 'win32' ? 'junction' : 'dir');
+    await writeFile(path.join(cwd, 'a.txt'), 'after\n');
+    for (const file of ['a.txt', path.join(alias, 'a.txt')]) {
+      const evidence = await collectFileEvidence({ changedFiles: [file] }, alias);
+      assert.match(evidence.stat, /a\.txt/);
+      assert.doesNotMatch(evidence.stat, /outside repository|unavailable/);
+    }
+    await rm(path.join(cwd, 'a.txt'));
+    const deleted = await collectFileEvidence({ changedFiles: ['a.txt'] }, alias);
+    assert.match(deleted.stat, /a\.txt/);
+    assert.doesNotMatch(deleted.stat, /outside repository|unavailable/);
+  } finally { await rm(dir, { recursive: true, force: true }); }
 });
 
 test('Git failure preserves observed file list', async () => {
