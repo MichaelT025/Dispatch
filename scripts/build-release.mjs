@@ -47,7 +47,6 @@ export const RUNTIME_DEPS = {
   'ipaddr.js': '2.5.0',
   minimatch: '10.2.6',
   'proper-lockfile': '^4.1.2',
-  'pi-commandcode-provider': '0.7.1',
 };
 
 /** Canonical Pi runtime version pinned into the staged manifest. */
@@ -90,6 +89,7 @@ export const FORK_LICENSES = [
   'extensions/pi-compact-transcript/LICENSE',
   'extensions/pi-atelier/LICENSE',
   'extensions/pi-todo/LICENSE',
+  'extensions/pi-commandcode/LICENSE',
   'extensions/pi-usage/LICENSE',
 ];
 
