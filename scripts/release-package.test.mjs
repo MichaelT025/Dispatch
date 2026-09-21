@@ -46,6 +46,7 @@ function makeRoot() {
     'extensions/pi-compact-transcript/LICENSE',
     'extensions/pi-atelier/LICENSE',
     'extensions/pi-todo/LICENSE',
+    'extensions/pi-commandcode/LICENSE',
   ]) write(lic, 'MIT fork\n');
   write('extensions/pi-usage/LICENSE', 'Apache License 2.0\n');
   write('extensions/pi-usage/adapter.mjs', 'export {};\n');
@@ -143,6 +144,7 @@ describe('buildRelease staging', () => {
         'extensions/pi-compact-transcript/LICENSE',
         'extensions/pi-atelier/LICENSE',
         'extensions/pi-todo/LICENSE',
+        'extensions/pi-commandcode/LICENSE',
       ]) assert.ok(existsSync(join(outDir, lic)), lic);
       // Compact entry is the state-helper index, not a nested extensions entry.
       assert.ok(MANAGED_ENTRIES.includes('extensions/pi-compact-transcript/index.ts'));

@@ -1,6 +1,6 @@
 # Dispatch
 
-Pi orchestration with role agents, parallel workers, a maintained extension bundle, and Dispatch Web—all in one npm package.
+Pi orchestration with role agents, parallel workers, a maintained extension bundle, and Dispatch Web—all in one npm package. Dispatch vendors the Command Code provider source under `extensions/pi-commandcode/` rather than installing it as a separate runtime dependency; see `THIRD_PARTY_NOTICES.md` and that directory's `UPSTREAM.md` for attribution and provenance.
 
 Requires Node.js 22.19+ and Git (including Git Bash on Windows).
 
@@ -23,7 +23,7 @@ Credentials stay in the isolated Pi credential store, never in command arguments
 
 ## Command Code provider
 
-Dispatch bundles `pi-commandcode-provider` 0.7.1; no separate `pi install` is needed.
+Dispatch vendors the `pi-commandcode-provider` 0.7.1 source; no separate `pi install` is needed. The copy is owned in `extensions/pi-commandcode/` and retains its upstream MIT license.
 In Dispatch, run `/login`, choose **Use a subscription → Command Code**, then
 select a model with `/model`. Alternatively set `COMMAND_CODE_API_KEY`.
 This is an unofficial integration requiring your own Command Code account and
