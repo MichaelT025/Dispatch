@@ -2,6 +2,6 @@
   "$comment": "Release automation pins. The web SHA is an immutable full commit hash in public MichaelT025/DispatchWeb. npm run release updates it to DispatchWeb main automatically; edit it by hand only for a manual release.",
   "web": {
     "repository": "MichaelT025/DispatchWeb",
-    "sha": "35030893d78386b578364ce72d8f5e7c1054c9e4"
+    "sha": "8dc1df5880dd1cef700fa49b2c400a4b9e4a0ddf"
   }
 }
