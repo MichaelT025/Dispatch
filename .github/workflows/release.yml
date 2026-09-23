@@ -98,6 +98,8 @@ jobs:
         with:
           name: release-tarball
           path: .release/michaelt025-dispatch-*.tgz
+          # upload-artifact >= 4.4 skips dot-directories like .release by default.
+          include-hidden-files: true
           if-no-files-found: error
           retention-days: 7
 

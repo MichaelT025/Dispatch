@@ -216,3 +216,13 @@ describe('release-metadata', () => {
     }
   });
 });
+
+describe('release workflow artifact upload', () => {
+  it('includes hidden files when uploading from a dot-directory', () => {
+    const workflow = readFileSync(new URL('../.github/workflows/release.yml', import.meta.url), 'utf8');
+    const upload = workflow.split(/\n\s*- name: /).find((step) => step.startsWith('Upload tested tarball'));
+    assert.ok(upload, 'release.yml must have the "Upload tested tarball" step');
+    // upload-artifact >= 4.4 silently skips dot-directories unless opted in.
+    if (/path:\s*\.[^/\s]*\//.test(upload)) assert.match(upload, /include-hidden-files:\s*true/);
+  });
+});
