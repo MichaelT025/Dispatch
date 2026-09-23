@@ -13,7 +13,7 @@ dispatch setup
 
 To try a development build instead, install a packed tarball with `npm install -g <path-to-dispatch.tgz>`.
 
-Setup is explicit: installation and ordinary launch never start authentication automatically. Setup checks for a plain `pi` command and offers to install supported Pi if absent; it never silently upgrades an existing Pi. Dispatch itself uses pinned Pi 0.85.1.
+Setup is explicit: installation and ordinary launch never start authentication automatically. Setup checks for a plain `pi` command and offers to install supported Pi if absent; it never silently upgrades an existing Pi. Dispatch itself uses pinned Pi 0.87.1.
 
 - **Codex login is required.** Choose browser login or device-code login.
 - **OpenCode Go is optional.** Choose Skip to start General and Fast on `openai-codex/gpt-5.6-luna`, both with Medium reasoning. Otherwise their Go defaults remain. Orchestrator uses Astra Low; Review uses Astra Medium.

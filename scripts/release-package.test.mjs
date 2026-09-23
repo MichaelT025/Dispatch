@@ -10,6 +10,7 @@ import {
   MANAGED_ENTRIES,
   RELEASE_MARKER_FILE,
   RUNTIME_DEPS,
+  PINNED_PI_VERSION,
 } from './build-release.mjs';
 
 function makeRoot() {
@@ -22,7 +23,7 @@ function makeRoot() {
   write('package.json', JSON.stringify({
     name: '@michaelt025/dispatch', version: '0.1.0', private: true, type: 'module',
     description: 'Dispatch test fixture',
-    dependencies: { '@earendil-works/pi-coding-agent': '0.85.1' },
+    dependencies: { '@earendil-works/pi-coding-agent': PINNED_PI_VERSION },
     overrides: { express: { qs: '6.16.0' }, '@agegr/pi-web': { next: '16.3.3' } },
   }));
   write('bin/dispatch.mjs', '#!/usr/bin/env node\n');
@@ -74,7 +75,7 @@ function makeWeb(extraDeps = {}, extra = null) {
   write('package.json', JSON.stringify({
     name: 'web-fixture', version: '0.0.0', private: true,
     dependencies: {
-      '@earendil-works/pi-coding-agent': '^0.85.1',
+      '@earendil-works/pi-coding-agent': `^${PINNED_PI_VERSION}`,
       express: '4.21.0',
       '@agegr/pi-web': '0.9.1',
       'pi-web-ui': '0.80.0',
@@ -120,7 +121,7 @@ describe('buildRelease staging', () => {
       for (const [name, range] of Object.entries(RUNTIME_DEPS)) {
         assert.equal(manifest.dependencies[name], range, name);
       }
-      assert.equal(manifest.dependencies['@earendil-works/pi-coding-agent'], '0.85.1');
+      assert.equal(manifest.dependencies['@earendil-works/pi-coding-agent'], PINNED_PI_VERSION);
       assert.equal(manifest.dependencies.express, '4.21.0');
       for (const name of EXCLUDED_DEPS) assert.ok(!(name in manifest.dependencies), name);
       assert.ok(!('dependispatchweb' in manifest.dependencies));

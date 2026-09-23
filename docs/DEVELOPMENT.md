@@ -75,7 +75,18 @@ npm ci && npm test
 
 ## Dependencies
 
-Pi (`@earendil-works/pi-coding-agent`) is pinned to an exact version in `package.json` and in `PINNED_PI_VERSION` inside `scripts/build-release.mjs`; the build refuses to stage if they disagree. Bump both together and re-run the packaged test.
+Pi is pinned to one exact version. `PI_PINNED_VERSION` in `lib/pi-install.mjs` is the single source of truth; the launcher, setup installer and release builder all read it. `package.json` pins `@earendil-works/pi-coding-agent` plus the `pi-ai`, `pi-agent-core` and `pi-tui` packages that extensions import directly, all to that same version, so extensions never resolve a different copy than the runtime. `lib/pi-version.test.mjs` (part of `npm test`) fails if any pin, the lockfile or the installed tree disagrees.
+
+### Upgrading Pi
+
+1. Read Pi's `CHANGELOG.md` from the current pin to the target, especially **Breaking Changes**. Check each against the extensions: custom providers (`pi-commandcode`), `pi.on(...)` hooks, `SessionManager`/`AgentSession` use, and the CLI flags mirrored in `PI_VALUE_OPTIONS` in `lib/cli.mjs` (compare with `node node_modules/@earendil-works/pi-coding-agent/dist/cli.js --help`).
+2. Set `PI_PINNED_VERSION`, then install all four packages at that exact version:
+   ```sh
+   npm install --save-exact @earendil-works/pi-coding-agent@<v> @earendil-works/pi-ai@<v> @earendil-works/pi-agent-core@<v> @earendil-works/pi-tui@<v>
+   ```
+3. `npm test`. The SDK integration tests (queue delivery, worktree, compaction) drive the real installed Pi, so behavioural changes usually surface here.
+4. Bump the WebUI (`MichaelT025/DispatchWeb`) to the same Pi version, merge it, and update the SHA in `config/release.json`. `build:release` refuses to stage when the WebUI's Pi range does not accept `PI_PINNED_VERSION`.
+5. Run the local build, pack and `npm run test:package` steps below against the new WebUI checkout, then smoke-test `dispatch` and `dispatch --web` with a real model, including a delegated worker and a Command Code model if you use one.
 
 Two `overrides` in `package.json` address upstream advisories (Next.js 16.3.3 for `@agegr/pi-web`, `qs` 6.16.0 for Express). Remove each when its upstream picks up a fixed version.
 

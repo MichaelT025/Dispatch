@@ -4,6 +4,7 @@
  */
 
 import assert from "node:assert/strict"
+import * as piAi from "@earendil-works/pi-ai"
 import { after, before, beforeEach, describe, it } from "node:test"
 
 import { COMMAND_CODE_CLI_VERSION } from "../src/commandcode-catalog.ts"
@@ -1048,6 +1049,33 @@ describe("streamCommandCode — request serialization", () => {
       objectAt(server.lastRequestBody(), ["params", "system"]),
       "You are a test assistant.\n\nUse concise answers.",
     )
+  })
+
+  it("replays Pi transcript system messages into system and tools", async () => {
+    server.mockResponse({
+      type: "success",
+      events: [JSON.stringify({ type: "finish", finishReason: "stop" })],
+    })
+    const { streamCommandCode } = createTestDeps({
+      apiBase: server.baseUrl(),
+      transcript: { getCurrentSystemPrompt: piAi.getCurrentSystemPrompt, getCurrentTools: piAi.getCurrentTools },
+    })
+    const tool = { name: "read", description: "Read a file", parameters: { type: "object", properties: {} } }
+    // Pi >= 0.86 hands providers a normalized context with no systemPrompt/tools fields.
+    const normalized = piAi.normalizeContext({
+      systemPrompt: "You are a transcript assistant.",
+      tools: [tool],
+      messages: makeContext().messages,
+    } as Parameters<typeof piAi.normalizeContext>[0])
+
+    await collectEvents(streamCommandCode(makeModel(), normalized as never, { apiKey: "mock-key" }))
+
+    const body = server.lastRequestBody()
+    assert.equal(objectAt(body, ["params", "system"]), "You are a transcript assistant.")
+    const tools = objectAt(body, ["params", "tools"]) as { name: string }[]
+    assert.deepEqual(tools.map((t) => t.name), ["read"])
+    const messages = objectAt(body, ["params", "messages"]) as { role: string }[]
+    assert.ok(messages.every((m) => m.role !== "system"))
   })
 
   it("times out a hung onResponse callback", async () => {

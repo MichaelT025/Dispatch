@@ -335,7 +335,9 @@ test('packaged artifact installs CLI + WebUI without source and shuts down grace
       assert.equal(body.ok, true);
       assert.equal(body.pid, webChild.pid, 'health must report the owned server PID');
       return body;
-    }, { timeoutMs: 45_000, label: 'owned web server health' });
+    }, { timeoutMs: 45_000, label: 'owned web server health' }).catch((error) => {
+      throw new Error(`${error.message}\nexit: ${webChild.exitCode}\nstderr: ${webStderr.slice(-3000)}`);
+    });
     assert.ok(health);
 
     const indexRes = await fetch(`${base}/`);
