@@ -109,11 +109,16 @@ Safety properties: GitHub-hosted `ubuntu-latest`; top-level `contents: read`; th
 
 One-time npm setup (package owner): register npm trusted publishing for exact values owner `MichaelT025`, repository `Dispatch`, workflow `release.yml`, environment `npm`. In the publisher's **Allowed actions**, explicitly enable **npm publish** (the staged-publication default is insufficient). Create the matching GitHub `npm` environment under repository Settings → Environments (no secrets needed); optionally require approval and restrict deployment tags to `v*`. Keep the `latest` dist-tag behaviour default; prerelease versions stay rejected until a prerelease channel is designed.
 
-To cut a release:
+To cut a release, merge the web changes you want to ship into DispatchWeb `main`, then from a clean, up-to-date Dispatch `main`:
 
-1. Verify the web pin: `git ls-remote https://github.com/MichaelT025/DispatchWeb.git HEAD` and commit that SHA into `config/release.json` if the web UI moved. The web checkout must already be merged and built by the workflow (`npm ci` there, no prebuilt sibling needed locally).
-2. Run `npm version <version> --no-git-tag-version`, commit both `package.json` and `package-lock.json`, and merge to `main`. `npm ci` does not update the lockfile.
-3. From clean `main` at that commit: `git tag v<version> && git push origin v<version>`. The workflow runs from that tag.
+```sh
+npm run release                  # prompts for patch/minor/major or x.y.z
+npm run release -- minor --dry-run   # show the plan only
+```
+
+[`scripts/release.mjs`](../scripts/release.mjs) refuses to run off `main`, with uncommitted changes, when local `main` differs from `origin/main`, or when the tag already exists. It pins `config/release.json` to DispatchWeb's current `main` commit, bumps `package.json` and `package-lock.json`, shows the plan and asks for confirmation (`--yes` skips it), then makes one `release: v<version>` commit, an annotated `v<version>` tag, and pushes both with `git push --atomic origin main v<version>`. The tag push starts the workflow. If the push fails, the commit and tag stay local and the script prints the retry and undo commands.
+
+If `main` is branch-protected, do the same by hand: update `web.sha` in `config/release.json` (`git ls-remote https://github.com/MichaelT025/DispatchWeb.git refs/heads/main`), run `npm version <version> --no-git-tag-version`, merge that commit through a PR, then tag the merged commit with `git tag v<version> && git push origin v<version>`.
 
 First-publication bootstrap: npm trusted publishers are configured in an **existing package's settings**. If `@michaelt025/dispatch` does not exist yet, use the manual fallback below to publish the tested tarball with `npm login` authentication first, keeping the Release workflow disabled during the bootstrap tag push. Then register the trusted publisher and re-enable the workflow. Use a **new version** for the first automated release; never re-tag or republish the bootstrap version.
 
