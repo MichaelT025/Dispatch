@@ -5,6 +5,7 @@
  * https://api.commandcode.ai/provider/v1
  */
 
+import * as piAi from "@earendil-works/pi-ai"
 import { AssistantMessageEventStream } from "@earendil-works/pi-ai"
 import * as piAiCompat from "@earendil-works/pi-ai/compat"
 import { streamSimple as streamNativeProvider } from "@earendil-works/pi-ai/compat"
@@ -42,6 +43,7 @@ import { MODEL_COSTS, ZERO_MODEL_COST } from "./src/pricing.ts"
 import { registerCommandCodeQuota } from "./src/quota-command.ts"
 import { createCommandCodeRuntime } from "./src/runtime.ts"
 import { createCommandCodeTransportRouter } from "./src/transport.ts"
+import type { TranscriptHelpers } from "./src/types.ts"
 
 const COMMAND_CODE_API = "commandcode-custom"
 const COMPAT_SOURCE_ID = "pi-commandcode-provider"
@@ -68,6 +70,14 @@ function registerCompatApiProvider(stream: CompatStreamFunction): void {
     { api: COMMAND_CODE_API, stream, streamSimple: stream },
     COMPAT_SOURCE_ID,
   )
+}
+
+/** Pi >= 0.86 transcript replay helpers; absent on older pi-ai and OMP. */
+function transcriptHelpers(): TranscriptHelpers | undefined {
+  const { getCurrentSystemPrompt, getCurrentTools } = piAi as Partial<TranscriptHelpers>
+  return typeof getCurrentSystemPrompt === "function" && typeof getCurrentTools === "function"
+    ? { getCurrentSystemPrompt, getCurrentTools }
+    : undefined
 }
 
 /**
@@ -216,6 +226,7 @@ export default async function (pi: ExtensionAPI) {
     createStream: () => new AssistantMessageEventStream(),
     calculateCost: calculateCommandCodeCost,
     apiBase: legacyApiBase(apiBase),
+    transcript: transcriptHelpers(),
   })
   const resolveStreamOptions = (options?: Parameters<typeof streamNativeProvider>[2]) =>
     withResolvedCommandCodeApiKey(options, configuredApiKey())

@@ -540,6 +540,10 @@ export function createStreamCommandCode(deps: CoreDependencies) {
         const reasoningEffort = mappedReasoningEffort(model, options)
         const timeoutMs = options?.timeoutMs
 
+        const messages = context.messages ?? []
+        // Replay transcript system messages when present; otherwise fall back
+        // to the legacy Context fields (older Pi, OMP, direct callers).
+        const transcript = deps.transcript && messages.some((m) => m.role === "system") ? deps.transcript : undefined
         const allowImages = modelSupportsImageInput(model.id, model.input)
         if (!allowImages) assertTextOnlyMessages(context.messages)
 
@@ -561,8 +565,8 @@ export function createStreamCommandCode(deps: CoreDependencies) {
           params: {
             model: model.id,
             messages: messagesToCC(context.messages, { allowImages }),
-            tools: toolsToJson(context.tools, model.id),
-            system: systemPromptToText(context.systemPrompt),
+            tools: toolsToJson(transcript ? transcript.getCurrentTools(messages) : context.tools, model.id),
+            system: transcript ? transcript.getCurrentSystemPrompt(messages) : systemPromptToText(context.systemPrompt),
             max_tokens: generateMaxTokens(model, options),
             stream: true,
             ...(options?.temperature !== undefined ? { temperature: options.temperature } : {}),

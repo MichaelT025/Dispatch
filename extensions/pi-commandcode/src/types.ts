@@ -209,4 +209,15 @@ export interface CoreDependencies {
   homeDir?: () => string
   /** Injectable delay for retry backoff. Defaults to setTimeout. */
   delay?: (ms: number, signal: AbortSignal) => Promise<void>
+  /**
+   * Pi >= 0.86 carries the prompt and tool declarations as `role: "system"`
+   * transcript messages instead of `context.systemPrompt`/`context.tools`.
+   * Hosts that do so inject pi-ai's replay helpers here.
+   */
+  transcript?: TranscriptHelpers
+}
+
+export interface TranscriptHelpers {
+  getCurrentSystemPrompt: (messages: readonly MessageLike[]) => string
+  getCurrentTools: (messages: readonly MessageLike[]) => readonly ToolLike[]
 }

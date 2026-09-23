@@ -196,6 +196,9 @@ test('/queue-drain rejection retains exact ids/text/order and re-injects both on
     // A retry still sees the untouched rows: same ids, text, order.
     await session.prompt('/queue-drain');
     await waitFor(() => extensionInputs().length === 2, 'second drain injection');
+    // Preflight rejection is asynchronous (Pi >= 0.86 awaits model catalog
+    // discovery first); wait for it to re-park the queue before asserting.
+    await waitFor(() => (globalThis.__piastraPiQueueState?.paused ? true : undefined), 'rejected retry to re-park the queue');
     assert.equal(extensionInputs()[1].text, 'one\ntwo');
     assert.deepEqual(rows(), [
       { id: 'follow-up-1', text: 'one', lane: 'followUp' },

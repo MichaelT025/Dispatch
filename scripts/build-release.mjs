@@ -26,6 +26,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { createRequire } from 'node:module';
+import { PI_PINNED_VERSION } from '../lib/pi-install.mjs';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -40,7 +41,11 @@ export const RELEASE_MARKER_VERSION = 1;
 
 /** Runtime dependency allowlist pinned into the staged manifest. */
 export const RUNTIME_DEPS = {
-  '@earendil-works/pi-coding-agent': '0.85.1',
+  '@earendil-works/pi-coding-agent': PI_PINNED_VERSION,
+  // Extensions import these directly; pin them to the versions Pi itself uses.
+  '@earendil-works/pi-agent-core': PI_PINNED_VERSION,
+  '@earendil-works/pi-ai': PI_PINNED_VERSION,
+  '@earendil-works/pi-tui': PI_PINNED_VERSION,
   'cross-spawn': '7.0.6',
   semver: '7.8.0',
   'html-to-text': '10.0.1',
@@ -50,7 +55,7 @@ export const RUNTIME_DEPS = {
 };
 
 /** Canonical Pi runtime version pinned into the staged manifest. */
-export const PINNED_PI_VERSION = '0.85.1';
+export const PINNED_PI_VERSION = PI_PINNED_VERSION;
 export const PI_RUNTIME_DEP = '@earendil-works/pi-coding-agent';
 
 /** Legacy/trial packages that must never enter the artifact. */

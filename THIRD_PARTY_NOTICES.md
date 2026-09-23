@@ -60,10 +60,10 @@ package. Its upstream MIT license is retained.
 
 ## npm production dependencies (own licenses retained)
 
-The staged package manifest declares pinned Pi `0.85.1` (shared runtime and
-Web SDK requirement) plus `html-to-text`, `ipaddr.js`, `proper-lockfile`,
+The staged package manifest declares pinned Pi `0.87.1` and its `pi-ai`,
+`pi-agent-core` and `pi-tui` packages (shared runtime and Web SDK requirement) plus `html-to-text`, `ipaddr.js`, `proper-lockfile`,
 `minimatch`, `cross-spawn`, `semver`, and the WebUI's production
-dependencies (with Pi forced to `0.85.1`). Excluded from the artifact:
+dependencies (with Pi forced to `0.87.1`). Excluded from the artifact:
 legacy/trial packages `@agegr/pi-web`, `pi-web-ui`, `tau-mirror`, and all
 development tooling. Each npm dependency retains its own published license,
 resolved from its package at install time; no npm license text is duplicated

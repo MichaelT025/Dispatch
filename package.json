@@ -28,7 +28,10 @@
   },
   "dependencies": {
     "@agegr/pi-web": "0.9.1",
-    "@earendil-works/pi-coding-agent": "0.85.1",
+    "@earendil-works/pi-agent-core": "0.87.1",
+    "@earendil-works/pi-ai": "0.87.1",
+    "@earendil-works/pi-coding-agent": "0.87.1",
+    "@earendil-works/pi-tui": "0.87.1",
     "cross-spawn": "7.0.6",
     "html-to-text": "10.0.1",
     "ipaddr.js": "2.5.0",

@@ -25,7 +25,7 @@ dispatch setup
 
 Setup is the only thing that authenticates. Ordinary launches never start onboarding; if setup has not been completed they print `Run dispatch setup` and stop.
 
-1. **Pi check.** If no plain `pi` command exists, setup offers to install a supported version globally. If a Pi is already installed it is left as-is. Either way Dispatch always runs its own pinned Pi (currently 0.85.1).
+1. **Pi check.** If no plain `pi` command exists, setup offers to install a supported version globally. If a Pi is already installed it is left as-is. Either way Dispatch always runs its own pinned Pi (currently 0.87.1).
 2. **Codex login (required).** Choose browser login or device-code login. Codex powers the Astra orchestrator and reviewer.
 3. **OpenCode Go (optional).** Enter a Go API key, or choose *Skip*. With Go configured, General workers use GLM-5.3-Flash and Fast workers use DeepSeek V4.1 Flash. When skipped, both use `openai-codex/gpt-5.6-luna` at Medium reasoning. The Orchestrator (Astra Low) and Review (Astra Medium) roles are the same either way.
 
