@@ -35,6 +35,14 @@ Dispatch/Pi update-check offline flags. Without a cached catalog, this can wait
 up to 10 seconds; if discovery fails, Dispatch still loads but Command Code
 models remain unavailable until a successful `/commandcode-refresh`.
 
+Command Code models appear under two selectors: `commandcode-plan` (free and
+plan models) and `commandcode-api` (API/extra-credit and unclassified models);
+`commandcode` remains the login. Which list a model belongs to comes from
+`~/.dispatch/agent/commandcode-model-classification.json`, created from packaged
+defaults on first run. Edit it and run `/commandcode-refresh`; see
+`extensions/pi-commandcode/README.md`. The labels do not decide billing—Command
+Code does.
+
 ## Launch
 
 ```sh

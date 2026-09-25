@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -62,8 +62,13 @@ async function setup(options = {}) {
   const previous = {
     agent: process.env.PI_CODING_AGENT_DIR, cache: process.env.COMMANDCODE_MODELS_CACHE,
     base: process.env.COMMANDCODE_API_BASE, models: process.env.COMMANDCODE_MODELS_URL,
-    key: process.env.COMMAND_CODE_API_KEY, fetch: globalThis.fetch,
+    key: process.env.COMMAND_CODE_API_KEY, classification: process.env.COMMANDCODE_MODEL_CLASSIFICATION,
+    fetch: globalThis.fetch,
   };
+  process.env.COMMANDCODE_MODEL_CLASSIFICATION = join(dir, "classification.json");
+  if (options.classification !== undefined) {
+    await writeFile(process.env.COMMANDCODE_MODEL_CLASSIFICATION, typeof options.classification === "string" ? options.classification : JSON.stringify(options.classification));
+  }
   process.env.PI_CODING_AGENT_DIR = dir;
   process.env.COMMANDCODE_MODELS_CACHE = join(dir, "models.json");
   process.env.COMMANDCODE_API_BASE = "https://cc.test/provider/v1";
@@ -85,7 +90,7 @@ async function setup(options = {}) {
     async close() {
       if (previous.fetch) globalThis.fetch = previous.fetch; else delete globalThis.fetch;
       for (const [name, value] of Object.entries(previous)) {
-        const env = { agent: "PI_CODING_AGENT_DIR", cache: "COMMANDCODE_MODELS_CACHE", base: "COMMANDCODE_API_BASE", models: "COMMANDCODE_MODELS_URL", key: "COMMAND_CODE_API_KEY" }[name];
+        const env = { agent: "PI_CODING_AGENT_DIR", cache: "COMMANDCODE_MODELS_CACHE", base: "COMMANDCODE_API_BASE", models: "COMMANDCODE_MODELS_URL", key: "COMMAND_CODE_API_KEY", classification: "COMMANDCODE_MODEL_CLASSIFICATION" }[name];
         if (name === "fetch") continue;
         if (value === undefined) delete process.env[env]; else process.env[env] = value;
       }
@@ -94,28 +99,34 @@ async function setup(options = {}) {
   };
 }
 
-const modelsFor = (pi, id) => [...pi.providers].reverse().find((p) => p.id === id)?.config;
+const latest = (pi, id) => [...pi.providers].reverse().find((p) => p.id === id)?.config;
+const modelsFor = (pi, id) => latest(pi, id)?.getModels().map((model) => model.id);
 const emit = async (pi, name, event, ctx) => pi.handlers.get(name)?.(event, ctx);
+const noUi = { ui: { notify() {} }, waitForIdle: async () => {} };
+const classification = (overrides = {}) => ({ version: 1, plan: ["gpt-5.6-sol"], free: ["poolside/laguna-s-2.1-free"], api: [], hidden: [], ...overrides });
 
- test("cold discovery registers GOAT and API groups", async () => {
+test("cold discovery registers the login, plan and API providers and seeds the classification file", async () => {
   const env = await setup();
   try {
-    assert.deepEqual(env.pi.providers.map((p) => p.id), ["commandcode", "commandcode-api"]);
-    assert.equal(modelsFor(env.pi, "commandcode").models.length, 2);
-    assert.equal(modelsFor(env.pi, "commandcode-api").getModels().length, 2);
+    assert.deepEqual(env.pi.providers.map((p) => p.id), ["commandcode", "commandcode-plan", "commandcode-api"]);
+    assert.deepEqual(latest(env.pi, "commandcode").models, []);
+    // Packaged defaults: Sol is a plan model and Laguna is free.
+    assert.deepEqual(modelsFor(env.pi, "commandcode-plan"), ["gpt-5.6-sol", "poolside/laguna-s-2.1-free"]);
+    assert.deepEqual(modelsFor(env.pi, "commandcode-api"), []);
+    const seeded = JSON.parse(await readFile(join(env.dir, "classification.json"), "utf-8"));
+    assert.ok(seeded.plan.includes("meta/muse-spark-1.3-contributor"));
   } finally { await env.close(); }
 });
 
- test("subscription failure keeps API catalog and downgrades primary to free-only", async () => {
+test("subscription failure keeps free models plan-facing and labels plan models under API", async () => {
   const env = await setup({ failSubscription: true });
   try {
-    assert.equal(modelsFor(env.pi, "commandcode").models.length, 1);
-    assert.equal(modelsFor(env.pi, "commandcode").models[0].id, "poolside/laguna-s-2.1-free");
-    assert.equal(modelsFor(env.pi, "commandcode-api").getModels().length, 2);
+    assert.deepEqual(modelsFor(env.pi, "commandcode-plan"), ["poolside/laguna-s-2.1-free"]);
+    assert.deepEqual(latest(env.pi, "commandcode-api").getModels().map((m) => m.name), ["gpt-5.6-sol (Plan unverified)"]);
   } finally { await env.close(); }
 });
 
-test("warm-cache factory waits for delayed plan detection before registering full GOAT", async () => {
+test("warm-cache factory waits for delayed plan detection before registering plan models", async () => {
   let release;
   const planGate = new Promise((resolve) => { release = resolve; });
   const env = await setup({ seedCache: true, awaitFactory: false, planGate });
@@ -126,45 +137,91 @@ test("warm-cache factory waits for delayed plan detection before registering ful
     assert.equal(settled, false);
     release();
     await env.factoryPromise;
-    assert.equal(modelsFor(env.pi, "commandcode").models.length, 2);
+    assert.equal(modelsFor(env.pi, "commandcode-plan").length, 2);
   } finally { await env.close(); }
 });
 
 test("refresh reapplies plan classification when discovery falls back to cache", async () => {
   const env = await setup();
   try {
-    const registry = makeRegistry("canonical-key");
-    const ctx = { modelRegistry: registry, model: undefined, hasUI: false };
+    const ctx = { modelRegistry: makeRegistry("canonical-key"), model: undefined, hasUI: false };
     await emit(env.pi, "session_start", {}, ctx);
-    assert.equal(modelsFor(env.pi, "commandcode").models.length, 2);
-    // The live model request fails, but cached models are re-registered after
-    // the account lookup changes to a non-GOAT subscription.
+    assert.equal(modelsFor(env.pi, "commandcode-plan").length, 2);
     globalThis.fetch = fakeFetch({ plan: "free", failModels: true }).fetch;
-    await env.pi.commands.get("commandcode-refresh").handler("", { ui: { notify() {} }, waitForIdle: async () => {} });
-    assert.equal(modelsFor(env.pi, "commandcode").models.length, 1);
-    assert.equal(modelsFor(env.pi, "commandcode-api").getModels().length, 2);
+    await env.pi.commands.get("commandcode-refresh").handler("", noUi);
+    assert.deepEqual(modelsFor(env.pi, "commandcode-plan"), ["poolside/laguna-s-2.1-free"]);
+    assert.deepEqual(modelsFor(env.pi, "commandcode-api"), ["gpt-5.6-sol"]);
   } finally { await env.close(); }
 });
 
- test("session auth is canonical, migrates legacy premium selection, and shutdown aborts runtime", async () => {
+test("/commandcode-refresh rereads JSON edits without reinstalling", async () => {
+  const env = await setup({ classification: classification() });
+  try {
+    assert.deepEqual(modelsFor(env.pi, "commandcode-plan"), ["gpt-5.6-sol", "poolside/laguna-s-2.1-free"]);
+    await writeFile(join(env.dir, "classification.json"), JSON.stringify(classification({ plan: [], api: ["gpt-5.6-sol"] })));
+    await env.pi.commands.get("commandcode-refresh").handler("", noUi);
+    assert.deepEqual(modelsFor(env.pi, "commandcode-plan"), ["poolside/laguna-s-2.1-free"]);
+    assert.deepEqual(latest(env.pi, "commandcode-api").getModels().map((m) => m.name), ["gpt-5.6-sol (API / extra credits)"]);
+  } finally { await env.close(); }
+});
+
+test("unknown live IDs are unclassified with a warning; stale IDs are reported", async () => {
+  const env = await setup({
+    classification: classification({ api: ["retired/model"] }),
+    models: modelsBody(["gpt-5.6-sol", "poolside/laguna-s-2.1-free", "brand-new/model"]),
+  });
+  try {
+    assert.deepEqual(latest(env.pi, "commandcode-api").getModels().map((m) => m.name), ["brand-new/model (Unclassified)"]);
+    const notices = [];
+    await env.pi.commands.get("commandcode-refresh").handler("", { ui: { notify: (m, level) => notices.push({ m, level }) }, waitForIdle: async () => {} });
+    assert.equal(notices[0].level, "warning");
+    assert.match(notices[0].m, /1 live Command Code model\(s\) are unclassified.*brand-new\/model/);
+    assert.match(notices[0].m, /not in the live catalog: retired\/model/);
+    const status = [];
+    await env.pi.commands.get("commandcode-status").handler("", { ui: { notify: (m) => status.push(m) } });
+    assert.match(status[0], /Unclassified live IDs: brand-new\/model/);
+    assert.match(status[0], /Stale classified IDs: retired\/model/);
+    assert.match(status[0], /Classified IDs: plan 1, free 1, api 1, hidden 0/);
+  } finally { await env.close(); }
+});
+
+test("a malformed classification file is kept and reported; the last good copy stays in use", async () => {
+  const env = await setup({ classification: classification() });
+  try {
+    const path = join(env.dir, "classification.json");
+    await writeFile(path, "{ broken");
+    const notices = [];
+    await env.pi.commands.get("commandcode-refresh").handler("", { ui: { notify: (m) => notices.push(m) }, waitForIdle: async () => {} });
+    assert.match(notices[0], /Ignoring .*invalid JSON.*Keeping the classification loaded before the edit/);
+    assert.deepEqual(modelsFor(env.pi, "commandcode-plan"), ["gpt-5.6-sol", "poolside/laguna-s-2.1-free"]);
+    assert.equal(await readFile(path, "utf-8"), "{ broken");
+  } finally { await env.close(); }
+});
+
+test("session auth is canonical, legacy commandcode/<id> is restored, and shutdown aborts runtime", async () => {
   const env = await setup({ seedCache: true });
   try {
     assert.ok(env.pi.handlers.has("session_shutdown"));
-    const premium = { provider: "commandcode", id: "gpt-5.6-sol" };
-    const apiModel = { provider: "commandcode-api", id: premium.id };
+    const planModel = { provider: "commandcode-plan", id: "gpt-5.6-sol" };
     const notices = [];
-    const ctx = { modelRegistry: makeRegistry("canonical-key", [apiModel]), model: premium, hasUI: true, ui: { notify: (m) => notices.push(m) } };
+    const ctx = {
+      modelRegistry: makeRegistry("canonical-key", [planModel]),
+      model: { provider: "openai-codex", id: "fallback" },
+      sessionManager: { getBranch: () => [{ type: "model_change", provider: "commandcode", modelId: "gpt-5.6-sol" }, { type: "message" }] },
+      hasUI: true,
+      ui: { notify: (m) => notices.push(m) },
+    };
     await emit(env.pi, "session_start", {}, ctx);
-    const api = modelsFor(env.pi, "commandcode-api");
-    assert.equal((await api.auth.apiKey.resolve()).auth.apiKey, "canonical-key");
-    assert.equal((await api.auth.apiKey.resolve()).source, "canonical registry");
-    assert.equal(env.pi.setModels.at(-1), apiModel);
-    assert.match(notices[0], /API \/ Extra credits/);
+    const plan = latest(env.pi, "commandcode-plan");
+    assert.equal((await plan.auth.apiKey.resolve()).auth.apiKey, "canonical-key");
+    assert.equal((await plan.auth.apiKey.resolve()).source, "canonical registry");
+    assert.equal(env.pi.setModels.at(-1), planModel);
+    assert.match(notices[0], /commandcode\/gpt-5\.6-sol is now commandcode-plan\/gpt-5\.6-sol/);
     let release;
     const gate = new Promise((resolve) => { release = resolve; });
     const shutdownRoute = fakeFetch({ gate });
     globalThis.fetch = shutdownRoute.fetch;
-    const refreshing = emit(env.pi, "session_start", {}, { ...ctx, model: undefined, hasUI: false });
+    const refreshing = emit(env.pi, "session_start", {}, { ...ctx, model: undefined, sessionManager: undefined, hasUI: false });
     await new Promise((resolve) => setImmediate(resolve));
     await emit(env.pi, "session_shutdown", {}, ctx);
     release();

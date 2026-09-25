@@ -68,7 +68,7 @@ describe("isolated pi launcher", () => {
     assert.deepEqual(calls[1].args, [
       "--no-approve",
       "--provider",
-      "commandcode",
+      "commandcode-api",
       "--model",
       "gpt-5.6-luna",
       "--model",

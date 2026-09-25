@@ -15,9 +15,29 @@ import {
   type ExtensionCommandContext,
   type ProviderConfig,
 } from "@earendil-works/pi-coding-agent"
+import { readFile } from "node:fs/promises"
 import { join } from "node:path"
 import { homedir } from "node:os"
-import { API_PROVIDER_ID, BILLING_NOTICE, PLAN_PROVIDER_ID, registerCommandCodeCatalog } from "./src/catalog.ts"
+import {
+  API_PROVIDER_ID,
+  BILLING_NOTICE,
+  LOGIN_PROVIDER_ID,
+  PLAN_PROVIDER_ID,
+  registerCommandCodeCatalog,
+  type CommandCodeCatalogSummary,
+} from "./src/catalog.ts"
+import {
+  describeClassificationReport,
+  loadModelClassification,
+  MODEL_CLASSES,
+  MODEL_CLASSIFICATION_FILE_NAME,
+  MODEL_CLASSIFICATION_VERSION,
+  reconcileModelClassification,
+  type ClassificationReport,
+  type LoadedModelClassification,
+  type ModelClassification,
+} from "./src/model-classification.ts"
+import { findCommandCodeModelToRestore } from "./src/restore.ts"
 import { fetchCommandCodePlan } from "./src/plan.ts"
 
 import { getConfiguredApiKey } from "./src/api-key.ts"
@@ -172,6 +192,42 @@ function createProviderConfig(
   }
 }
 
+/** Pi's saved default model; only read to carry a legacy `commandcode/<id>` default forward. */
+async function readDefaultModel(): Promise<{ provider: string; id: string } | undefined> {
+  try {
+    const settings: unknown = JSON.parse(await readFile(join(getAgentDir(), "settings.json"), "utf-8"))
+    if (typeof settings !== "object" || settings === null) return undefined
+    const { defaultProvider, defaultModel } = settings as Record<string, unknown>
+    return typeof defaultProvider === "string" && typeof defaultModel === "string"
+      ? { provider: defaultProvider, id: defaultModel }
+      : undefined
+  } catch {
+    return undefined
+  }
+}
+
+function describeClassificationStatus(
+  loaded: LoadedModelClassification | undefined,
+  report: ClassificationReport | undefined,
+): string[] {
+  if (!loaded) return ["Model classification: not loaded yet"]
+  const { classification } = loaded
+  const source = {
+    user: "user file",
+    seeded: "user file (just created from packaged defaults)",
+    "last-good": "last valid copy of the user file (current file is invalid)",
+    packaged: "packaged defaults (user file not used)",
+  }[loaded.source]
+  return [
+    `Model classification: ${loaded.path} — ${source}${classification.reviewedOn ? `, reviewed ${classification.reviewedOn}` : ""}`,
+    `Classified IDs: ${MODEL_CLASSES.map((name) => `${name} ${classification[name].length}`).join(", ")}`,
+    `Unclassified live IDs: ${report?.unclassified.length ? report.unclassified.join(", ") : "none"}`,
+    `Stale classified IDs: ${report?.stale.length ? report.stale.join(", ") : "none"}`,
+    ...loaded.warnings,
+    ...loaded.notes,
+  ]
+}
+
 function legacyApiBase(providerApiBase: string): string {
   return providerApiBase.replace(/\/provider\/v1\/?$/, "")
 }
@@ -180,16 +236,40 @@ export default async function (pi: ExtensionAPI) {
   let registry: ExtensionCommandContext["modelRegistry"] | undefined
   let plan: string | undefined
   let planCredential: string | undefined
-  let catalog = { planVerified: false, planCount: 0, apiCount: 0 }
+  let catalog: CommandCodeCatalogSummary = { planVerified: false, planCount: 0, apiCount: 0 }
+  const classificationPath =
+    process.env.COMMANDCODE_MODEL_CLASSIFICATION ?? join(getAgentDir(), MODEL_CLASSIFICATION_FILE_NAME)
+  let classification: LoadedModelClassification | undefined
+  let lastGoodClassification: ModelClassification | undefined
+  let classificationReport: ClassificationReport | undefined
+  // Reread on every catalog load so edits apply on /commandcode-refresh or a new session.
+  const reloadClassification = async () => {
+    try {
+      classification = await loadModelClassification({ path: classificationPath, lastGood: lastGoodClassification })
+    } catch (error) {
+      // Packaged defaults unreadable: classify nothing rather than guess.
+      classification = {
+        classification: { version: MODEL_CLASSIFICATION_VERSION, plan: [], free: [], api: [], hidden: [] },
+        source: "packaged",
+        path: classificationPath,
+        warnings: [`Could not load any Command Code model classification (${error instanceof Error ? error.message : String(error)}); every model is shown as unclassified.`],
+        notes: [],
+      }
+    }
+    if (classification.source === "user" || classification.source === "seeded") {
+      lastGoodClassification = classification.classification
+    }
+    return classification
+  }
   const sharedAuth = {
     resolve: async () => {
-      if (registry) return registry.getProviderAuth(PLAN_PROVIDER_ID)
+      if (registry) return registry.getProviderAuth(LOGIN_PROVIDER_ID)
       const apiKey = pickCommandCodeApiKey(configuredApiKey(), undefined)
       return apiKey ? { auth: { apiKey }, source: "Command Code" } : undefined
     },
     check: async () => {
       const configured = registry
-        ? registry.getProviderAuthStatus(PLAN_PROVIDER_ID).configured
+        ? registry.getProviderAuthStatus(LOGIN_PROVIDER_ID).configured
         : Boolean(pickCommandCodeApiKey(configuredApiKey(), undefined))
       return configured ? { type: "api_key" as const, source: "Shared Command Code login" } : undefined
     },
@@ -206,16 +286,15 @@ export default async function (pi: ExtensionAPI) {
     } catch {
       await runtime.refresh()
     }
-    if (ctx.model?.provider !== PLAN_PROVIDER_ID && ctx.model?.provider !== API_PROVIDER_ID) return
-    const previousProvider = ctx.model.provider
-    const registered = ctx.modelRegistry.find(ctx.model.provider, ctx.model.id)
-      ?? ctx.modelRegistry.find(API_PROVIDER_ID, ctx.model.id)
-    if (registered) {
-      await pi.setModel(registered)
-      if (registered.provider !== previousProvider && ctx.hasUI) {
-        ctx.ui.notify("This model is outside the verified GOAT catalog; restored under Command Code (API / Extra credits). " + BILLING_NOTICE, "warning")
-      }
-    }
+    const restore = findCommandCodeModelToRestore({
+      current: ctx.model,
+      branch: ctx.sessionManager?.getBranch?.() ?? [],
+      defaultModel: await readDefaultModel(),
+      find: (provider, id) => ctx.modelRegistry.find(provider, id),
+    })
+    if (!restore) return
+    await pi.setModel(restore.model)
+    if (ctx.hasUI) ctx.ui.notify(`${restore.reason} ${BILLING_NOTICE}`, "info")
   })
   const apiBase = process.env.COMMANDCODE_API_BASE ?? DEFAULT_PROVIDER_API_BASE
   const modelsUrl = process.env.COMMANDCODE_MODELS_URL ?? DEFAULT_MODELS_URL
@@ -267,7 +346,13 @@ export default async function (pi: ExtensionAPI) {
   const runtimeApi = {
     registerCommand: pi.registerCommand.bind(pi),
     registerProvider: (_id: string, config: ProviderConfig) => {
-      catalog = registerCommandCodeCatalog(pi, config, plan, sharedAuth)
+      catalog = registerCommandCodeCatalog(
+        pi,
+        config,
+        plan,
+        sharedAuth,
+        classification?.classification ?? { version: MODEL_CLASSIFICATION_VERSION, plan: [], free: [], api: [], hidden: [] },
+      )
     },
   }
   const runtime = createCommandCodeRuntime<ProviderConfig, ExtensionCommandContext>(runtimeApi, {
@@ -282,22 +367,37 @@ export default async function (pi: ExtensionAPI) {
           return { detectedPlan, apiKey }
         } catch { return { detectedPlan: undefined, apiKey: undefined } }
       })()
-      const [loaded, detected] = await Promise.all([
+      const [loaded, detected, loadedClassification] = await Promise.all([
         loadCommandCodeModels({ url: modelsUrl, cachePath: modelsCachePath, timeoutMs: modelsTimeoutMs, signal }),
         planPromise,
+        reloadClassification(),
       ])
       plan = detected.detectedPlan
       planCredential = detected.apiKey
-      return loaded
+      if (loaded.models.length === 0) return loaded
+      classificationReport = reconcileModelClassification(
+        loadedClassification.classification,
+        loaded.models.map((model) => model.id),
+      )
+      const warnings = [
+        loaded.warning,
+        ...loadedClassification.warnings,
+        ...describeClassificationReport(classificationReport, classificationPath),
+      ].filter(Boolean)
+      return warnings.length > 0 ? { ...loaded, warning: warnings.join("\n") } : loaded
     },
-    loadCachedModels: () => loadCachedCommandCodeModels(modelsCachePath),
+    loadCachedModels: async () => {
+      await reloadClassification()
+      return loadCachedCommandCodeModels(modelsCachePath)
+    },
     createProviderConfig: (models) => createProviderConfig(models, apiBase, transport.stream),
     getTransport: transport.getTransport,
     reregisterCachedModels: true,
     awaitInitialRefresh: true,
     describeCatalog: () => [
-      `Plan: ${catalog.planVerified ? "GOAT (verified)" : "unverified; plan catalog contains only known free models"}`,
-      `Plan models: ${catalog.planCount}; API / extra-credit models: ${catalog.apiCount}`,
+      `Plan: ${catalog.planVerified ? "GOAT (verified)" : `unverified; ${PLAN_PROVIDER_ID} lists only free models and plan models are shown under ${API_PROVIDER_ID}`}`,
+      `${PLAN_PROVIDER_ID} models: ${catalog.planCount}; ${API_PROVIDER_ID} models: ${catalog.apiCount}`,
+      ...describeClassificationStatus(classification, classificationReport),
       BILLING_NOTICE,
     ].join("\n"),
   })

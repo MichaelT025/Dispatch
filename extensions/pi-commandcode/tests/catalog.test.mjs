@@ -2,7 +2,15 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { createModels, InMemoryCredentialStore } from "@earendil-works/pi-ai";
 import { composeModelProvider } from '../../../node_modules/@earendil-works/pi-coding-agent/dist/core/provider-composer.js';
-import { API_PROVIDER_ID, PLAN_PROVIDER_ID, registerCommandCodeCatalog } from "../src/catalog.ts";
+import { API_PROVIDER_ID, LOGIN_PROVIDER_ID, PLAN_PROVIDER_ID, registerCommandCodeCatalog } from "../src/catalog.ts";
+
+const classification = {
+  version: 1,
+  plan: ["gpt-5.6-sol"],
+  free: ["poolside/laguna-s-2.1-free"],
+  api: ["claude-opus-5"],
+  hidden: ["typesafe/jev"],
+};
 
 const streamCalls = [];
 const stream = (model) => {
@@ -35,7 +43,9 @@ function makeConfig() {
         api: "commandcode-custom",
         cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
       },
-      { id: "not-in-goat", name: "Other (CC)", api: "commandcode-custom", cost: { input: 9, output: 8, cacheRead: 7, cacheWrite: 6 } },
+      { id: "claude-opus-5", name: "Opus (CC)", api: "commandcode-custom", cost: { input: 9, output: 8, cacheRead: 7, cacheWrite: 6 } },
+      { id: "brand-new/model", name: "New (CC)", api: "commandcode-custom", cost: { input: 1, output: 1, cacheRead: 1, cacheWrite: 1 } },
+      { id: "typesafe/jev", name: "Jev (CC)", api: "commandcode-custom", cost: { input: 1, output: 1, cacheRead: 1, cacheWrite: 1 } },
     ],
   };
 }
@@ -50,48 +60,83 @@ function collect(config, plan = "individual-goat-monthly", auth = {}) {
   const result = registerCommandCodeCatalog(pi, config, plan, {
     resolve: auth.resolve ?? (async () => ({ auth: { apiKey: "initial" }, source: "test" })),
     check: auth.check ?? (async () => ({ type: "api_key", source: "test" })),
-  });
+  }, classification);
   return { registrations, result };
 }
 
-test("registers a GOAT primary catalog and a full API alias without changing input", () => {
+const ids = (provider) => provider.getModels().map((model) => model.id);
+const names = (provider) => provider.getModels().map((model) => model.name);
+
+test("registers the canonical login plus plan and API selectors without changing input", () => {
   const config = makeConfig();
   const beforeModels = JSON.parse(JSON.stringify(config.models));
   const beforeHeaders = { ...config.headers };
   const { registrations, result } = collect(config);
-  const primary = registrations.find((entry) => entry.id === PLAN_PROVIDER_ID).config;
+  assert.deepEqual(registrations.map((entry) => entry.id), [LOGIN_PROVIDER_ID, PLAN_PROVIDER_ID, API_PROVIDER_ID]);
+  const login = registrations.find((entry) => entry.id === LOGIN_PROVIDER_ID).config;
+  const plan = registrations.find((entry) => entry.id === PLAN_PROVIDER_ID);
   const alias = registrations.find((entry) => entry.id === API_PROVIDER_ID);
 
-  assert.deepEqual(result, { planVerified: true, planCount: 2, apiCount: 3 });
-  assert.deepEqual(primary.models.map((model) => model.id), ["gpt-5.6-sol", "poolside/laguna-s-2.1-free"]);
-  assert.deepEqual(alias.getModels().map((model) => model.id), config.models.map((model) => model.id));
-  assert.equal(primary.name, "Command Code (GOAT)");
+  assert.equal(LOGIN_PROVIDER_ID, "commandcode");
+  assert.equal(PLAN_PROVIDER_ID, "commandcode-plan");
+  assert.equal(API_PROVIDER_ID, "commandcode-api");
+  assert.deepEqual(login.models, [], "the login provider owns credentials, not selector entries");
+  assert.equal(typeof login.streamSimple, "function");
+  assert.deepEqual(result, { planVerified: true, planCount: 2, apiCount: 2 });
+  assert.deepEqual(ids(plan), ["gpt-5.6-sol", "poolside/laguna-s-2.1-free"]);
+  assert.deepEqual(names(plan), ["Sol (GOAT)", "Laguna (Free)"]);
+  assert.deepEqual(ids(alias), ["claude-opus-5", "brand-new/model"]);
+  assert.deepEqual(names(alias), ["Opus (API / extra credits)", "New (Unclassified)"]);
+  assert.equal(plan.name, "Command Code (Plan: GOAT)");
   assert.equal(alias.name, "Command Code (API / Extra credits)");
   assert.equal(alias.baseUrl, config.baseUrl);
   assert.deepEqual(alias.headers, config.headers);
 
-  const apiSol = alias.getModels()[0];
-  assert.equal(apiSol.provider, API_PROVIDER_ID);
-  assert.equal(apiSol.baseUrl, config.models[0].baseUrl);
-  assert.deepEqual(apiSol.cost, config.models[0].cost);
-  assert.deepEqual(apiSol.headers, config.models[0].headers);
-  assert.deepEqual(apiSol.compat, config.models[0].compat);
-  assert.equal(apiSol.contextWindow, config.models[0].contextWindow);
-  assert.equal(apiSol.maxTokens, config.models[0].maxTokens);
+  const planSol = plan.getModels()[0];
+  assert.equal(planSol.provider, PLAN_PROVIDER_ID);
+  assert.equal(planSol.baseUrl, config.models[0].baseUrl);
+  assert.deepEqual(planSol.cost, config.models[0].cost);
+  assert.deepEqual(planSol.headers, config.models[0].headers);
+  assert.deepEqual(planSol.compat, config.models[0].compat);
+  assert.equal(planSol.contextWindow, config.models[0].contextWindow);
+  assert.equal(planSol.maxTokens, config.models[0].maxTokens);
+  assert.equal(alias.getModels()[0].provider, API_PROVIDER_ID);
   assert.deepEqual(config.models, beforeModels);
   assert.deepEqual(config.headers, beforeHeaders);
-  assert.notEqual(primary.models, config.models);
-  assert.notEqual(alias.getModels(), config.models);
 });
 
-test("unknown plans expose only free primary models and API keeps every model", () => {
-  const config = makeConfig();
-  const { registrations } = collect(config, "unrecognized-plan");
-  const primary = registrations.find((entry) => entry.id === PLAN_PROVIDER_ID).config;
+test("every live model appears in at most one selector; hidden in none", () => {
+  const { registrations } = collect(makeConfig());
+  const listed = registrations.filter((entry) => entry.id !== LOGIN_PROVIDER_ID).flatMap((entry) => ids(entry));
+  assert.equal(new Set(listed).size, listed.length);
+  assert.ok(!listed.includes("typesafe/jev"));
+});
+
+test("unverified plans keep free models plan-facing and label plan models under API", () => {
+  const { registrations, result } = collect(makeConfig(), "unrecognized-plan");
+  const plan = registrations.find((entry) => entry.id === PLAN_PROVIDER_ID);
   const alias = registrations.find((entry) => entry.id === API_PROVIDER_ID);
-  assert.equal(primary.name, "Command Code (Plan unverified)");
-  assert.deepEqual(primary.models.map((model) => model.id), ["poolside/laguna-s-2.1-free"]);
-  assert.deepEqual(alias.getModels().map((model) => model.id), config.models.map((model) => model.id));
+  assert.equal(result.planVerified, false);
+  assert.equal(plan.name, "Command Code (Plan unverified)");
+  assert.deepEqual(ids(plan), ["poolside/laguna-s-2.1-free"]);
+  assert.deepEqual(names(alias), ["Sol (Plan unverified)", "Opus (API / extra credits)", "New (Unclassified)"]);
+});
+
+test("plan alias shares the canonical login without its own credential flow", async () => {
+  const { registrations } = collect(makeConfig(), "goat", {
+    resolve: async () => ({ auth: { apiKey: "shared" }, source: "canonical" }),
+  });
+  const plan = registrations.find((entry) => entry.id === PLAN_PROVIDER_ID);
+  assert.equal(plan.auth.oauth, undefined);
+  await assert.rejects(plan.auth.apiKey.login(), /Sign in to Command Code \(commandcode\)/);
+  assert.equal((await plan.auth.apiKey.resolve()).auth.apiKey, "shared");
+});
+
+test("the zero-model login provider composes in Pi", () => {
+  const { registrations } = collect(makeConfig());
+  const login = registrations.find((entry) => entry.id === LOGIN_PROVIDER_ID).config;
+  const provider = composeModelProvider(LOGIN_PROVIDER_ID, undefined, { getProvider: () => undefined }, { ...login, apiKey: "$COMMAND_CODE_API_KEY", oauth: { name: "Command Code", login: async () => ({}), refreshToken: async (c) => c, getApiKey: (c) => c.access } });
+  assert.deepEqual(provider.getModels(), []);
 });
 
 test("alias auth resolves dynamically and propagates errors",  async () => {
@@ -144,13 +189,13 @@ test('host overlays cannot create a second alias credential flow', async () => {
 test("both registrations route streaming through the same implementation and retain cost", () => {
   streamCalls.length = 0;
   const { registrations } = collect(makeConfig());
-  const primary = registrations.find((entry) => entry.id === PLAN_PROVIDER_ID).config;
+  const plan = registrations.find((entry) => entry.id === PLAN_PROVIDER_ID);
   const alias = registrations.find((entry) => entry.id === API_PROVIDER_ID);
   const context = {};
-  primary.streamSimple(primary.models[0], context);
+  plan.streamSimple(plan.getModels()[0], context);
   alias.streamSimple(alias.getModels()[0], context);
   assert.equal(streamCalls.length, 2);
-  assert.equal(streamCalls[0], primary.models[0]);
+  assert.equal(streamCalls[0], plan.getModels()[0]);
   assert.equal(streamCalls[1], alias.getModels()[0]);
-  assert.deepEqual(alias.getModels()[0].cost, { input: 1, output: 2, cacheRead: 3, cacheWrite: 4 });
+  assert.deepEqual(plan.getModels()[0].cost, { input: 1, output: 2, cacheRead: 3, cacheWrite: 4 });
 });

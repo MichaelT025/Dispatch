@@ -294,8 +294,8 @@ export class CommandCodeRuntime<TProviderConfig, TContext extends CommandCodeCom
         const result = await this.refresh()
         if (result.refreshed) {
           ctx.ui.notify(
-            `Command Code model catalog refreshed (${result.modelCount} models from ${result.source}).`,
-            "info",
+            `Command Code model catalog refreshed (${result.modelCount} models from ${result.source}).${result.warning ? ` ${result.warning}` : ""}`,
+            result.warning ? "warning" : "info",
           )
         } else {
           ctx.ui.notify(
