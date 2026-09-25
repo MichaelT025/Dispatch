@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -228,5 +228,80 @@ test("session auth is canonical, legacy commandcode/<id> is restored, and shutdo
     await refreshing;
     const modelCall = shutdownRoute.calls.find((call) => call.url.endsWith("/models"));
     assert.equal(modelCall.init.signal.aborted, true);
+  } finally { await env.close(); }
+});
+
+const legacyBranch = (id) => [{ type: "model_change", provider: "commandcode", modelId: id }, { type: "message" }];
+const newSessionBranch = (model) => [{ type: "model_change", provider: model.provider, modelId: model.id }];
+const selectorModels = [
+  { provider: "commandcode-plan", id: "gpt-5.6-sol" },
+  { provider: "commandcode-plan", id: "poolside/laguna-s-2.1-free" },
+];
+
+async function startSession(env, overrides) {
+  const notices = [];
+  const ctx = {
+    modelRegistry: makeRegistry("canonical-key", [...selectorModels, { provider: "anthropic", id: "explicit" }, { provider: "openai-codex", id: "fallback" }]),
+    model: { provider: "openai-codex", id: "fallback" },
+    sessionManager: { getBranch: () => [] },
+    cwd: env.dir,
+    isProjectTrusted: () => true,
+    hasUI: true,
+    ui: { notify: (m) => notices.push(m) },
+    ...overrides,
+  };
+  await emit(env.pi, "session_start", {}, ctx);
+  return notices;
+}
+
+test("an explicit --model on resume is not overridden by a legacy session model", async () => {
+  const env = await setup({ classification: classification() });
+  const argv = process.argv;
+  try {
+    process.argv = [argv[0], argv[1], "-c", "--model", "anthropic/explicit"];
+    const notices = await startSession(env, { model: { provider: "anthropic", id: "explicit" }, sessionManager: { getBranch: () => legacyBranch("gpt-5.6-sol") } });
+    assert.deepEqual(env.pi.setModels, []);
+    assert.deepEqual(notices, []);
+  } finally { process.argv = argv; await env.close(); }
+});
+
+test("a resumed model that is not Pi's default fallback (e.g. an SDK worker model) is kept", async () => {
+  const env = await setup({ classification: classification() });
+  try {
+    await writeFile(join(env.dir, "settings.json"), JSON.stringify({ defaultProvider: "openai-codex", defaultModel: "fallback" }));
+    await startSession(env, { model: { provider: "anthropic", id: "explicit" }, sessionManager: { getBranch: () => legacyBranch("gpt-5.6-sol") } });
+    assert.deepEqual(env.pi.setModels, []);
+    await startSession(env, { sessionManager: { getBranch: () => legacyBranch("gpt-5.6-sol") } });
+    assert.deepEqual(env.pi.setModels.map((m) => `${m.provider}/${m.id}`), ["commandcode-plan/gpt-5.6-sol"]);
+  } finally { await env.close(); }
+});
+
+test("legacy defaults honour a trusted project .pi/settings.json and only notify on new sessions", async () => {
+  const env = await setup({ classification: classification() });
+  try {
+    await writeFile(join(env.dir, "settings.json"), JSON.stringify({ defaultProvider: "commandcode", defaultModel: "gpt-5.6-sol" }));
+    await mkdir(join(env.dir, ".pi"), { recursive: true });
+    await writeFile(join(env.dir, ".pi", "settings.json"), JSON.stringify({ defaultModel: "poolside/laguna-s-2.1-free" }));
+    const branch = { getBranch: () => newSessionBranch({ provider: "openai-codex", id: "fallback" }) };
+
+    const trusted = await startSession(env, { sessionManager: branch });
+    assert.match(trusted[0], /default model commandcode\/poolside\/laguna-s-2\.1-free is now commandcode-plan\/poolside\/laguna-s-2\.1-free/);
+    const untrusted = await startSession(env, { sessionManager: branch, isProjectTrusted: () => false });
+    assert.match(untrusted[0], /default model commandcode\/gpt-5\.6-sol is now commandcode-plan\/gpt-5\.6-sol/);
+    assert.deepEqual(env.pi.setModels, [], "a new session's model may be an explicit caller choice");
+
+    await writeFile(join(env.dir, ".pi", "settings.json"), JSON.stringify({ defaultProvider: "openai-codex", defaultModel: "fallback" }));
+    assert.deepEqual(await startSession(env, { sessionManager: branch }), [], "a project default that is not legacy wins");
+  } finally { await env.close(); }
+});
+
+test("context-length errors are normalized for overflow recovery on every Command Code selector", async () => {
+  const env = await setup({ classification: classification() });
+  try {
+    for (const provider of ["commandcode-plan", "commandcode-api"]) {
+      const message = { role: "assistant", provider, stopReason: "error", errorMessage: "Prompt too large for this model" };
+      const result = await emit(env.pi, "message_end", { message }, { model: { provider, id: "gpt-5.6-sol" } });
+      assert.match(result?.message.errorMessage ?? "", /^context_length_exceeded:/, provider);
+    }
   } finally { await env.close(); }
 });

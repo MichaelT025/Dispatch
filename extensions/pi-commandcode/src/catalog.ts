@@ -2,14 +2,10 @@ import { createProvider, type AuthCheck, type AuthResult, type Provider } from '
 import type { ProviderConfig } from '@earendil-works/pi-coding-agent'
 import type { ModelClassification } from './model-classification.ts'
 import { splitCommandCodeModels, type SelectorLabel } from './plan-models.ts'
+import { API_PROVIDER_ID, LOGIN_PROVIDER_ID, PLAN_PROVIDER_ID } from './provider-ids.ts'
 
-/** Canonical login: owns `/login`, stored credentials and the auth.json key. Lists no models. */
-export const LOGIN_PROVIDER_ID = 'commandcode'
-/** Selector for `free` models and, once a GOAT plan is verified, `plan` models. */
-export const PLAN_PROVIDER_ID = 'commandcode-plan'
-/** Selector for `api` and unclassified models, plus `plan` models while the plan is unverified. */
-export const API_PROVIDER_ID = 'commandcode-api'
-export const COMMAND_CODE_PROVIDER_IDS: readonly string[] = [LOGIN_PROVIDER_ID, PLAN_PROVIDER_ID, API_PROVIDER_ID]
+export { API_PROVIDER_ID, COMMAND_CODE_PROVIDER_IDS, LOGIN_PROVIDER_ID, PLAN_PROVIDER_ID } from './provider-ids.ts'
+
 export const BILLING_NOTICE = 'Catalog groups describe plan coverage, not payment routing. Command Code chooses the balance; plan models can consume extra credits after limits. API prices are estimates, not additional charges guaranteed by this picker.'
 
 const LABELS: Record<SelectorLabel, string> = {

@@ -25,4 +25,4 @@ This is not a billing enforcement layer. The server may use purchased credits fo
 
 Plan documentation is never scraped at runtime. `/commandcode-refresh` rereads the classification file and reloads both the live model catalog and plan status; `/commandcode-status` exposes redacted diagnostics, classification diagnostics and the catalog summary.
 
-On `session_start`, legacy `commandcode/<id>` choices (resumed sessions and a legacy default model) are moved to whichever selector now lists the ID. CLI `--model commandcode/<id>` and worker/role configuration that names `commandcode/...` must be updated to `commandcode-plan/...` or `commandcode-api/...` explicitly.
+On `session_start`, a resumed session's legacy `commandcode/<id>` choice is moved to whichever selector now lists the ID only when the current model is Pi's fallback (never over an explicit `--model` or a non-default model); a legacy default model (global or trusted project settings) only produces a notice. CLI `--model commandcode/<id>` and worker/role configuration that names `commandcode/...` must be updated to `commandcode-plan/...` or `commandcode-api/...` explicitly.

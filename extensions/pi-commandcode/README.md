@@ -14,7 +14,13 @@ Authenticate once through `/login` → **Command Code** (or `COMMAND_CODE_API_KE
 
 Each live model appears in at most one selector. Use `commandcode-plan/<id>` or `commandcode-api/<id>` with `--model`, in worker/role configuration, and in `settings.json`.
 
-In Dispatch 0.2.1 and earlier the plan-facing selector was `commandcode`. Saved choices are carried forward on `session_start`: a resumed session whose last model was `commandcode/<id>`, a new session whose `defaultProvider` is `commandcode`, or a session on a model that the classification has since moved between selectors is switched to whichever selector now lists the ID, with a notice. This is session-level; re-select the model once to persist the new default. `--model commandcode/<id>` on the CLI is not rewritten.
+In Dispatch 0.2.1 and earlier the plan-facing selector was `commandcode`. Pi can no longer resolve a saved `commandcode/<id>`, so it falls back to another model; on `session_start` Dispatch handles that as follows:
+
+- **Resumed session whose last model was `commandcode/<id>`:** switched to whichever selector now lists the ID, with a notice — but only when the current model is Pi's fallback. An explicit `--model` is never overridden, and neither is a model other than the default Pi would have fallen back to (for example one passed by a Dispatch worker or another SDK caller).
+- **New session whose effective default is `commandcode/<id>`:** a notice naming the new ID; the session model is not changed, because an explicit model from an in-process caller cannot be told apart from Pi's fallback. The effective default is resolved by Pi's own settings manager, so a trusted project `.pi/settings.json` overrides the global one as it does for Pi; untrusted project settings are ignored.
+- **Model moved between `commandcode-plan` and `commandcode-api` by a classification edit:** switched to the same ID under its new selector.
+
+Switches are session-level; select the model with `/model` once to persist a new default. `--model commandcode/<id>` on the CLI and worker/role configuration are not rewritten.
 
 ## Model classification file
 

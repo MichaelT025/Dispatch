@@ -9,13 +9,13 @@ import * as piAi from "@earendil-works/pi-ai"
 import { AssistantMessageEventStream } from "@earendil-works/pi-ai"
 import * as piAiCompat from "@earendil-works/pi-ai/compat"
 import { streamSimple as streamNativeProvider } from "@earendil-works/pi-ai/compat"
+import * as piCodingAgent from "@earendil-works/pi-coding-agent"
 import {
   getAgentDir,
   type ExtensionAPI,
   type ExtensionCommandContext,
   type ProviderConfig,
 } from "@earendil-works/pi-coding-agent"
-import { readFile } from "node:fs/promises"
 import { join } from "node:path"
 import { homedir } from "node:os"
 import {
@@ -37,7 +37,7 @@ import {
   type LoadedModelClassification,
   type ModelClassification,
 } from "./src/model-classification.ts"
-import { findCommandCodeModelToRestore } from "./src/restore.ts"
+import { findCommandCodeModelToRestore, hasExplicitModelArg } from "./src/restore.ts"
 import { fetchCommandCodePlan } from "./src/plan.ts"
 
 import { getConfiguredApiKey } from "./src/api-key.ts"
@@ -192,15 +192,20 @@ function createProviderConfig(
   }
 }
 
-/** Pi's saved default model; only read to carry a legacy `commandcode/<id>` default forward. */
-async function readDefaultModel(): Promise<{ provider: string; id: string } | undefined> {
+/**
+ * Pi's effective default model, resolved by Pi's own settings manager so a
+ * trusted project `.pi/settings.json` overrides the global one exactly as it
+ * does for Pi. Read-only; only consulted to carry a legacy default forward.
+ */
+function readDefaultModel(cwd: string | undefined, projectTrusted: boolean): { provider: string; id: string } | undefined {
+  // Oh My Pi's substitute package may not export SettingsManager.
+  const { SettingsManager } = piCodingAgent as Partial<typeof piCodingAgent>
+  if (typeof SettingsManager?.create !== "function") return undefined
   try {
-    const settings: unknown = JSON.parse(await readFile(join(getAgentDir(), "settings.json"), "utf-8"))
-    if (typeof settings !== "object" || settings === null) return undefined
-    const { defaultProvider, defaultModel } = settings as Record<string, unknown>
-    return typeof defaultProvider === "string" && typeof defaultModel === "string"
-      ? { provider: defaultProvider, id: defaultModel }
-      : undefined
+    const settings = SettingsManager.create(cwd ?? process.cwd(), getAgentDir(), { projectTrusted })
+    const provider = settings.getDefaultProvider()
+    const id = settings.getDefaultModel()
+    return provider && id ? { provider, id } : undefined
   } catch {
     return undefined
   }
@@ -289,11 +294,13 @@ export default async function (pi: ExtensionAPI) {
     const restore = findCommandCodeModelToRestore({
       current: ctx.model,
       branch: ctx.sessionManager?.getBranch?.() ?? [],
-      defaultModel: await readDefaultModel(),
+      defaultModel: readDefaultModel(ctx.cwd, ctx.isProjectTrusted?.() ?? false),
+      // Dispatch runs Pi in-process with Pi's own arguments in process.argv.
+      explicitModel: hasExplicitModelArg(process.argv.slice(2)),
       find: (provider, id) => ctx.modelRegistry.find(provider, id),
     })
     if (!restore) return
-    await pi.setModel(restore.model)
+    if (restore.action === "switch") await pi.setModel(restore.model)
     if (ctx.hasUI) ctx.ui.notify(`${restore.reason} ${BILLING_NOTICE}`, "info")
   })
   const apiBase = process.env.COMMANDCODE_API_BASE ?? DEFAULT_PROVIDER_API_BASE

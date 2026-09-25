@@ -38,6 +38,8 @@ const MANAGED_ENTRIES = [
   'extensions/pi-usage/index.ts',
 ];
 const LEGACY_DEPS = ['@agegr/pi-web', 'pi-web-ui', 'tau-mirror'];
+const COMMANDCODE_CLASSIFICATION = 'commandcode-model-classification.json';
+const COMMANDCODE_DEFAULTS = join('extensions', 'pi-commandcode', 'config', COMMANDCODE_CLASSIFICATION);
 
 function tarballPath() {
   const raw = process.env.DISPATCH_TEST_TARBALL;
@@ -176,6 +178,19 @@ test('packaged artifact installs CLI + WebUI without source and shuts down grace
   ]) {
     assert.ok(existsSync(join(pkgRoot, file)), `missing artifact file: ${file}`);
   }
+  // Command Code classification defaults must ship. Node cannot strip types
+  // under node_modules, so the installed extension's own validator is
+  // exercised through the CLI below (it seeds the user file only after
+  // accepting the defaults); here, check the basic shape.
+  const defaultsPath = join(pkgRoot, COMMANDCODE_DEFAULTS);
+  assert.ok(existsSync(defaultsPath), `missing Command Code classification defaults: ${COMMANDCODE_DEFAULTS}`);
+  const defaultsText = await readFile(defaultsPath, 'utf8');
+  const defaults = JSON.parse(defaultsText);
+  assert.equal(defaults.version, 1);
+  const classifiedIds = ['plan', 'free', 'api', 'hidden'].flatMap((name) => defaults[name] ?? []);
+  for (const name of ['plan', 'free', 'api']) assert.ok(defaults[name]?.length > 0, `classification "${name}" must not be empty`);
+  assert.equal(new Set(classifiedIds).size, classifiedIds.length, 'each classified model ID must appear once');
+
   const faviconCandidates = [
     join('vendor', 'web-ui', 'web', 'dist', 'favicon.svg'),
     join('vendor', 'web-ui', 'web', 'public', 'favicon.svg'),
@@ -285,8 +300,15 @@ test('packaged artifact installs CLI + WebUI without source and shuts down grace
       names.includes('wt') || names.includes('worktree'),
       `missing /wt (or /worktree); got: ${names.join(', ')}`,
     );
+    assert.ok(names.includes('commandcode-status'), `missing /commandcode-status; got: ${names.join(', ')}`);
     const state = await request('get_state');
     assert.equal(typeof state?.messageCount, 'number', 'get_state must report messageCount without model calls');
+    // The installed Command Code extension seeds the user's classification
+    // from the shipped defaults on first start (independent of network).
+    const seededPath = join(paths.agentDir, COMMANDCODE_CLASSIFICATION);
+    assert.ok(existsSync(seededPath), `installed CLI did not create ${seededPath}\nstderr: ${stderr.slice(-2000)}`);
+    assert.equal(await readFile(seededPath, 'utf8'), defaultsText, 'seeded classification must match the shipped defaults');
+    assert.doesNotMatch(stderr, /packaged model classification|Could not load any Command Code model classification/, 'defaults must load without fallback warnings');
 
     const closed = new Promise((resolveClose) => {
       const timer = setTimeout(() => resolveClose(null), 15_000);
