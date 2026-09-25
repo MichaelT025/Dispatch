@@ -1,73 +1,76 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import {
-  FREE_MODEL_IDS,
-  GOAT_MODEL_IDS,
-  GOAT_SOURCE_URL,
-  GOAT_VERIFIED_ON,
-  splitCommandCodeModels,
-} from "../src/plan-models.ts";
+import { isVerifiedGoatPlan, splitCommandCodeModels } from "../src/plan-models.ts";
+
+const classification = {
+  version: 1,
+  plan: ["gpt-5.6-sol", "meta/muse-spark-1.3-contributor"],
+  free: ["poolside/laguna-s-2.1-free"],
+  api: ["claude-opus-5"],
+  hidden: ["typesafe/jev"],
+};
 
 const catalog = [
-  { id: "gpt-5.6-sol", price: 5 },
-  { id: "gpt-5.6-luna", price: 0.2 },
-  { id: "deepseek/deepseek-v4-pro", price: 0.66 },
-  { id: "claude-opus-5", price: 0 },
-  { id: FREE_MODEL_IDS[0], price: 0 },
-  { id: FREE_MODEL_IDS[1], price: 0 },
+  { id: "gpt-5.6-sol" },
+  { id: "claude-opus-5" },
+  { id: "poolside/laguna-s-2.1-free" },
+  { id: "meta/muse-spark-1.3-contributor" },
+  { id: "brand-new/model" },
+  { id: "typesafe/jev" },
 ];
 
-test("exports the reviewed source and exact free IDs", () => {
-  assert.equal(GOAT_SOURCE_URL, "https://commandcode.ai/docs/plans/goat");
-  assert.match(GOAT_VERIFIED_ON, /^20\d\d-\d\d-\d\d$/);
-  assert.deepEqual([...FREE_MODEL_IDS], [
-    "poolside/laguna-s-2.1-free",
-    "inclusionai/ling-3.0-flash-sante:free",
-  ]);
-  assert.equal(new Set(GOAT_MODEL_IDS).size, GOAT_MODEL_IDS.length);
-  assert.equal(GOAT_MODEL_IDS.length, 52);
-});
+const view = (entries) => entries.map(({ model, label }) => `${model.id}:${label}`);
 
-test("verified GOAT gets included premium models and both free models", () => {
-  const result = splitCommandCodeModels(catalog, "individual-goat-monthly");
+test("verified GOAT puts plan and free models plan-facing, API and unknown models API-facing", () => {
+  const result = splitCommandCodeModels(catalog, "individual-goat-monthly", classification);
   assert.equal(result.planVerified, true);
-  assert.deepEqual(result.planModels.map(({ id }) => id), [
-    "gpt-5.6-sol", "gpt-5.6-luna", "deepseek/deepseek-v4-pro",
-    "poolside/laguna-s-2.1-free", "inclusionai/ling-3.0-flash-sante:free",
+  assert.deepEqual(view(result.planModels), [
+    "gpt-5.6-sol:plan",
+    "poolside/laguna-s-2.1-free:free",
+    "meta/muse-spark-1.3-contributor:plan",
   ]);
-  assert.deepEqual(result.apiModels, catalog);
+  assert.deepEqual(view(result.apiModels), ["claude-opus-5:api", "brand-new/model:unclassified"]);
 });
 
-test("premium exclusions are not inferred from price, prefixes, or unknown IDs", () => {
-  const models = [
-    { id: "claude-opus-5", price: 0 },
-    { id: "gpt-5.6-terra", price: 0 },
-    { id: "made-up-free-model", price: 0 },
-  ];
-  const result = splitCommandCodeModels(models, "goat");
+test("unknown IDs are never assumed plan or API, whatever their name or price", () => {
+  const models = [{ id: "made-up-free-model", price: 0 }, { id: "gpt-5.6-terra", price: 0 }];
+  const result = splitCommandCodeModels(models, "goat", classification);
   assert.deepEqual(result.planModels, []);
-  assert.deepEqual(result.apiModels, models);
+  assert.deepEqual(view(result.apiModels), ["made-up-free-model:unclassified", "gpt-5.6-terra:unclassified"]);
 });
 
-test("unknown plans make no GOAT claim but retain free models", () => {
-  const result = splitCommandCodeModels(catalog, "go");
+test("unverified plans keep free models plan-facing and label plan models API-facing", () => {
+  const result = splitCommandCodeModels(catalog, "go", classification);
   assert.equal(result.planVerified, false);
-  assert.deepEqual(result.planModels.map(({ id }) => id), [...FREE_MODEL_IDS]);
+  assert.deepEqual(view(result.planModels), ["poolside/laguna-s-2.1-free:free"]);
+  assert.deepEqual(view(result.apiModels), [
+    "gpt-5.6-sol:plan-unverified",
+    "claude-opus-5:api",
+    "meta/muse-spark-1.3-contributor:plan-unverified",
+    "brand-new/model:unclassified",
+  ]);
+});
+
+test("hidden models appear in neither selector", () => {
+  const result = splitCommandCodeModels(catalog, "goat", classification);
+  const all = [...result.planModels, ...result.apiModels].map(({ model }) => model.id);
+  assert.ok(!all.includes("typesafe/jev"));
+  assert.equal(new Set(all).size, all.length);
 });
 
 test("matching is exact and cadence suffixes do not turn Go into GOAT", () => {
-  assert.equal(splitCommandCodeModels([], "GOAT_YEARLY").planVerified, true);
-  assert.equal(splitCommandCodeModels([], "individual-goat").planVerified, true);
-  assert.equal(splitCommandCodeModels([], "go").planVerified, false);
-  assert.equal(splitCommandCodeModels([], "goat-ish").planVerified, false);
+  assert.equal(isVerifiedGoatPlan("GOAT_YEARLY"), true);
+  assert.equal(isVerifiedGoatPlan("individual-goat"), true);
+  assert.equal(isVerifiedGoatPlan("go"), false);
+  assert.equal(isVerifiedGoatPlan("goat-ish"), false);
+  assert.equal(isVerifiedGoatPlan(undefined), false);
 });
 
-test("preserves metadata, order, and input arrays", () => {
-  const input = [{ id: FREE_MODEL_IDS[0], nested: { value: 1 } }, { id: "gpt-5.6-sol", nested: { value: 2 } }];
+test("preserves model objects, order, and input arrays", () => {
+  const input = [{ id: "poolside/laguna-s-2.1-free", nested: { value: 1 } }, { id: "gpt-5.6-sol", nested: { value: 2 } }];
   const original = [...input];
-  const result = splitCommandCodeModels(input, "goat");
-  assert.deepEqual(result.planModels, [input[0], input[1]]);
-  assert.deepEqual(result.apiModels, original);
-  assert.equal(result.planModels[0], input[0]);
+  const result = splitCommandCodeModels(input, "goat", classification);
+  assert.equal(result.planModels[0].model, input[0]);
+  assert.equal(result.planModels[1].model, input[1]);
   assert.deepEqual(input, original);
 });

@@ -9,9 +9,14 @@ import {
   EXCLUDED_DEPS,
   MANAGED_ENTRIES,
   RELEASE_MARKER_FILE,
+  RUNTIME_DATA_FILES,
   RUNTIME_DEPS,
   PINNED_PI_VERSION,
 } from './build-release.mjs';
+
+const CLASSIFICATION = 'extensions/pi-commandcode/config/commandcode-model-classification.json';
+// The real packaged defaults, so the fixture ships exactly what users get.
+const CLASSIFICATION_TEXT = readFileSync(new URL(`../${CLASSIFICATION}`, import.meta.url), 'utf8');
 
 function makeRoot() {
   const root = mkdtempSync(join(tmpdir(), 'dispatch-root-'));
@@ -62,6 +67,7 @@ function makeRoot() {
   write('extensions/piastra/auth.json', '{"token":"secret"}\n');
   write('extensions/piastra/.env', 'SECRET=1\n');
   write('extensions/piastra/.env.local', 'SECRET=1\n');
+  write(CLASSIFICATION, CLASSIFICATION_TEXT);
   return root;
 }
 
@@ -104,6 +110,8 @@ describe('buildRelease staging', () => {
         run: () => { calls.push(true); return { status: 0 }; },
       });
       assert.equal(calls.length, 0);
+      assert.deepEqual(Object.keys(RUNTIME_DATA_FILES), [CLASSIFICATION]);
+      assert.equal(readFileSync(join(outDir, CLASSIFICATION), 'utf8'), CLASSIFICATION_TEXT, 'Command Code classification defaults must ship unchanged');
       assert.match(readFileSync(join(outDir, 'extensions/pi-usage/LICENSE'), 'utf8'), /Apache/);
       assert.ok(existsSync(join(outDir, 'extensions/pi-usage/adapter.mjs')));
       assert.ok(!existsSync(join(outDir, 'extensions/pi-usage/adapter.test.mjs')));
@@ -225,6 +233,31 @@ describe('buildRelease staging', () => {
     } finally {
       rmSync(root2, { recursive: true, force: true });
       rmSync(web3, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses to ship missing or unusable Command Code classification defaults', () => {
+    const cases = [
+      [(root) => rmSync(join(root, CLASSIFICATION)), /Source checkout missing.*commandcode-model-classification\.json/s],
+      [(root) => writeFileSync(join(root, CLASSIFICATION), '{ not json'), /unusable runtime data.*commandcode-model-classification\.json/s],
+      [(root) => {
+        const doc = JSON.parse(CLASSIFICATION_TEXT);
+        doc.api.push(doc.plan[0]);
+        writeFileSync(join(root, CLASSIFICATION), JSON.stringify(doc));
+      }, /unusable runtime data.*listed in both "plan" and "api"/s],
+    ];
+    for (const [breakRoot, expected] of cases) {
+      const root = makeRoot();
+      const { web } = makeWeb();
+      const outDir = join(root, '.release', 'package');
+      try {
+        breakRoot(root);
+        assert.throws(() => buildRelease({ root, webRoot: web, outDir, buildWeb: false }), expected);
+        assert.ok(!existsSync(outDir), 'no partial output is left behind');
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+        rmSync(web, { recursive: true, force: true });
+      }
     }
   });
 

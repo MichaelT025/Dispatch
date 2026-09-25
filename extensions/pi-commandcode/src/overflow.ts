@@ -1,4 +1,6 @@
-const COMMAND_CODE_PROVIDERS = new Set(["commandcode", "commandcode-api"])
+import { COMMAND_CODE_PROVIDER_IDS } from "./provider-ids.ts"
+
+const COMMAND_CODE_PROVIDERS = new Set(COMMAND_CODE_PROVIDER_IDS)
 const CONTEXT_OVERFLOW_PREFIX = "context_length_exceeded:"
 
 const COMMAND_CODE_OVERFLOW_PATTERNS = [

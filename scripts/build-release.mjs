@@ -27,6 +27,7 @@ import {
 } from 'node:fs';
 import { createRequire } from 'node:module';
 import { PI_PINNED_VERSION } from '../lib/pi-install.mjs';
+import { parseModelClassification } from '../extensions/pi-commandcode/src/model-classification.ts';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -97,6 +98,33 @@ export const FORK_LICENSES = [
   'extensions/pi-commandcode/LICENSE',
   'extensions/pi-usage/LICENSE',
 ];
+
+/**
+ * Runtime data read by shipped extensions from their own package directory,
+ * with the check that proves each copy is usable. The Command Code defaults
+ * seed a missing user classification file, so a broken copy must not ship.
+ */
+export const RUNTIME_DATA_FILES = {
+  'extensions/pi-commandcode/config/commandcode-model-classification.json': parseModelClassification,
+};
+
+/** Validation errors for RUNTIME_DATA_FILES under `dir` (missing, unreadable or invalid). */
+export function runtimeDataErrors(dir) {
+  const errors = [];
+  for (const [rel, validate] of Object.entries(RUNTIME_DATA_FILES)) {
+    const path = join(dir, rel);
+    if (!existsSync(path)) {
+      errors.push(`${rel}: missing`);
+      continue;
+    }
+    try {
+      validate(JSON.parse(readFileSync(path, 'utf8')));
+    } catch (error) {
+      errors.push(`${rel}: ${error.message}`);
+    }
+  }
+  return errors;
+}
 
 /** WebUI files preserved with their relative layout under vendor/web-ui/. */
 export const WEB_LAYOUT = [
@@ -249,6 +277,7 @@ export function sourceArtifactErrors(root) {
     'package.json',
     ...MANAGED_ENTRIES,
     ...FORK_LICENSES,
+    ...Object.keys(RUNTIME_DATA_FILES),
   ];
   return required.filter((rel) => !existsSync(join(root, rel)));
 }
@@ -448,6 +477,8 @@ export function buildRelease({ root = DEFAULT_ROOT, webRoot, outDir, buildWeb = 
     for (const entry of MANAGED_ENTRIES) {
       if (!existsSync(join(tmp, entry))) fail(`Staged artifact missing entry ${entry}; refusing to replace output.`);
     }
+    const dataErrors = runtimeDataErrors(tmp);
+    if (dataErrors.length) fail(`Staged artifact has unusable runtime data (${dataErrors.join('; ')}); refusing to replace output.`);
     for (const file of ['config/agents.json', 'config/checks.json']) {
       copyIfExists(join(r, file), join(tmp, file));
     }

@@ -9,6 +9,7 @@ import * as piAi from "@earendil-works/pi-ai"
 import { AssistantMessageEventStream } from "@earendil-works/pi-ai"
 import * as piAiCompat from "@earendil-works/pi-ai/compat"
 import { streamSimple as streamNativeProvider } from "@earendil-works/pi-ai/compat"
+import * as piCodingAgent from "@earendil-works/pi-coding-agent"
 import {
   getAgentDir,
   type ExtensionAPI,
@@ -17,7 +18,26 @@ import {
 } from "@earendil-works/pi-coding-agent"
 import { join } from "node:path"
 import { homedir } from "node:os"
-import { API_PROVIDER_ID, BILLING_NOTICE, PLAN_PROVIDER_ID, registerCommandCodeCatalog } from "./src/catalog.ts"
+import {
+  API_PROVIDER_ID,
+  BILLING_NOTICE,
+  LOGIN_PROVIDER_ID,
+  PLAN_PROVIDER_ID,
+  registerCommandCodeCatalog,
+  type CommandCodeCatalogSummary,
+} from "./src/catalog.ts"
+import {
+  describeClassificationReport,
+  loadModelClassification,
+  MODEL_CLASSES,
+  MODEL_CLASSIFICATION_FILE_NAME,
+  MODEL_CLASSIFICATION_VERSION,
+  reconcileModelClassification,
+  type ClassificationReport,
+  type LoadedModelClassification,
+  type ModelClassification,
+} from "./src/model-classification.ts"
+import { findCommandCodeModelToRestore, hasExplicitModelArg } from "./src/restore.ts"
 import { fetchCommandCodePlan } from "./src/plan.ts"
 
 import { getConfiguredApiKey } from "./src/api-key.ts"
@@ -172,6 +192,47 @@ function createProviderConfig(
   }
 }
 
+/**
+ * Pi's effective default model, resolved by Pi's own settings manager so a
+ * trusted project `.pi/settings.json` overrides the global one exactly as it
+ * does for Pi. Read-only; only consulted to carry a legacy default forward.
+ */
+function readDefaultModel(cwd: string | undefined, projectTrusted: boolean): { provider: string; id: string } | undefined {
+  // Oh My Pi's substitute package may not export SettingsManager.
+  const { SettingsManager } = piCodingAgent as Partial<typeof piCodingAgent>
+  if (typeof SettingsManager?.create !== "function") return undefined
+  try {
+    const settings = SettingsManager.create(cwd ?? process.cwd(), getAgentDir(), { projectTrusted })
+    const provider = settings.getDefaultProvider()
+    const id = settings.getDefaultModel()
+    return provider && id ? { provider, id } : undefined
+  } catch {
+    return undefined
+  }
+}
+
+function describeClassificationStatus(
+  loaded: LoadedModelClassification | undefined,
+  report: ClassificationReport | undefined,
+): string[] {
+  if (!loaded) return ["Model classification: not loaded yet"]
+  const { classification } = loaded
+  const source = {
+    user: "user file",
+    seeded: "user file (just created from packaged defaults)",
+    "last-good": "last valid copy of the user file (current file is invalid)",
+    packaged: "packaged defaults (user file not used)",
+  }[loaded.source]
+  return [
+    `Model classification: ${loaded.path} — ${source}${classification.reviewedOn ? `, reviewed ${classification.reviewedOn}` : ""}`,
+    `Classified IDs: ${MODEL_CLASSES.map((name) => `${name} ${classification[name].length}`).join(", ")}`,
+    `Unclassified live IDs: ${report?.unclassified.length ? report.unclassified.join(", ") : "none"}`,
+    `Stale classified IDs: ${report?.stale.length ? report.stale.join(", ") : "none"}`,
+    ...loaded.warnings,
+    ...loaded.notes,
+  ]
+}
+
 function legacyApiBase(providerApiBase: string): string {
   return providerApiBase.replace(/\/provider\/v1\/?$/, "")
 }
@@ -180,16 +241,40 @@ export default async function (pi: ExtensionAPI) {
   let registry: ExtensionCommandContext["modelRegistry"] | undefined
   let plan: string | undefined
   let planCredential: string | undefined
-  let catalog = { planVerified: false, planCount: 0, apiCount: 0 }
+  let catalog: CommandCodeCatalogSummary = { planVerified: false, planCount: 0, apiCount: 0 }
+  const classificationPath =
+    process.env.COMMANDCODE_MODEL_CLASSIFICATION ?? join(getAgentDir(), MODEL_CLASSIFICATION_FILE_NAME)
+  let classification: LoadedModelClassification | undefined
+  let lastGoodClassification: ModelClassification | undefined
+  let classificationReport: ClassificationReport | undefined
+  // Reread on every catalog load so edits apply on /commandcode-refresh or a new session.
+  const reloadClassification = async () => {
+    try {
+      classification = await loadModelClassification({ path: classificationPath, lastGood: lastGoodClassification })
+    } catch (error) {
+      // Packaged defaults unreadable: classify nothing rather than guess.
+      classification = {
+        classification: { version: MODEL_CLASSIFICATION_VERSION, plan: [], free: [], api: [], hidden: [] },
+        source: "packaged",
+        path: classificationPath,
+        warnings: [`Could not load any Command Code model classification (${error instanceof Error ? error.message : String(error)}); every model is shown as unclassified.`],
+        notes: [],
+      }
+    }
+    if (classification.source === "user" || classification.source === "seeded") {
+      lastGoodClassification = classification.classification
+    }
+    return classification
+  }
   const sharedAuth = {
     resolve: async () => {
-      if (registry) return registry.getProviderAuth(PLAN_PROVIDER_ID)
+      if (registry) return registry.getProviderAuth(LOGIN_PROVIDER_ID)
       const apiKey = pickCommandCodeApiKey(configuredApiKey(), undefined)
       return apiKey ? { auth: { apiKey }, source: "Command Code" } : undefined
     },
     check: async () => {
       const configured = registry
-        ? registry.getProviderAuthStatus(PLAN_PROVIDER_ID).configured
+        ? registry.getProviderAuthStatus(LOGIN_PROVIDER_ID).configured
         : Boolean(pickCommandCodeApiKey(configuredApiKey(), undefined))
       return configured ? { type: "api_key" as const, source: "Shared Command Code login" } : undefined
     },
@@ -206,16 +291,17 @@ export default async function (pi: ExtensionAPI) {
     } catch {
       await runtime.refresh()
     }
-    if (ctx.model?.provider !== PLAN_PROVIDER_ID && ctx.model?.provider !== API_PROVIDER_ID) return
-    const previousProvider = ctx.model.provider
-    const registered = ctx.modelRegistry.find(ctx.model.provider, ctx.model.id)
-      ?? ctx.modelRegistry.find(API_PROVIDER_ID, ctx.model.id)
-    if (registered) {
-      await pi.setModel(registered)
-      if (registered.provider !== previousProvider && ctx.hasUI) {
-        ctx.ui.notify("This model is outside the verified GOAT catalog; restored under Command Code (API / Extra credits). " + BILLING_NOTICE, "warning")
-      }
-    }
+    const restore = findCommandCodeModelToRestore({
+      current: ctx.model,
+      branch: ctx.sessionManager?.getBranch?.() ?? [],
+      defaultModel: readDefaultModel(ctx.cwd, ctx.isProjectTrusted?.() ?? false),
+      // Dispatch runs Pi in-process with Pi's own arguments in process.argv.
+      explicitModel: hasExplicitModelArg(process.argv.slice(2)),
+      find: (provider, id) => ctx.modelRegistry.find(provider, id),
+    })
+    if (!restore) return
+    if (restore.action === "switch") await pi.setModel(restore.model)
+    if (ctx.hasUI) ctx.ui.notify(`${restore.reason} ${BILLING_NOTICE}`, "info")
   })
   const apiBase = process.env.COMMANDCODE_API_BASE ?? DEFAULT_PROVIDER_API_BASE
   const modelsUrl = process.env.COMMANDCODE_MODELS_URL ?? DEFAULT_MODELS_URL
@@ -267,7 +353,13 @@ export default async function (pi: ExtensionAPI) {
   const runtimeApi = {
     registerCommand: pi.registerCommand.bind(pi),
     registerProvider: (_id: string, config: ProviderConfig) => {
-      catalog = registerCommandCodeCatalog(pi, config, plan, sharedAuth)
+      catalog = registerCommandCodeCatalog(
+        pi,
+        config,
+        plan,
+        sharedAuth,
+        classification?.classification ?? { version: MODEL_CLASSIFICATION_VERSION, plan: [], free: [], api: [], hidden: [] },
+      )
     },
   }
   const runtime = createCommandCodeRuntime<ProviderConfig, ExtensionCommandContext>(runtimeApi, {
@@ -282,22 +374,37 @@ export default async function (pi: ExtensionAPI) {
           return { detectedPlan, apiKey }
         } catch { return { detectedPlan: undefined, apiKey: undefined } }
       })()
-      const [loaded, detected] = await Promise.all([
+      const [loaded, detected, loadedClassification] = await Promise.all([
         loadCommandCodeModels({ url: modelsUrl, cachePath: modelsCachePath, timeoutMs: modelsTimeoutMs, signal }),
         planPromise,
+        reloadClassification(),
       ])
       plan = detected.detectedPlan
       planCredential = detected.apiKey
-      return loaded
+      if (loaded.models.length === 0) return loaded
+      classificationReport = reconcileModelClassification(
+        loadedClassification.classification,
+        loaded.models.map((model) => model.id),
+      )
+      const warnings = [
+        loaded.warning,
+        ...loadedClassification.warnings,
+        ...describeClassificationReport(classificationReport, classificationPath),
+      ].filter(Boolean)
+      return warnings.length > 0 ? { ...loaded, warning: warnings.join("\n") } : loaded
     },
-    loadCachedModels: () => loadCachedCommandCodeModels(modelsCachePath),
+    loadCachedModels: async () => {
+      await reloadClassification()
+      return loadCachedCommandCodeModels(modelsCachePath)
+    },
     createProviderConfig: (models) => createProviderConfig(models, apiBase, transport.stream),
     getTransport: transport.getTransport,
     reregisterCachedModels: true,
     awaitInitialRefresh: true,
     describeCatalog: () => [
-      `Plan: ${catalog.planVerified ? "GOAT (verified)" : "unverified; plan catalog contains only known free models"}`,
-      `Plan models: ${catalog.planCount}; API / extra-credit models: ${catalog.apiCount}`,
+      `Plan: ${catalog.planVerified ? "GOAT (verified)" : `unverified; ${PLAN_PROVIDER_ID} lists only free models and plan models are shown under ${API_PROVIDER_ID}`}`,
+      `${PLAN_PROVIDER_ID} models: ${catalog.planCount}; ${API_PROVIDER_ID} models: ${catalog.apiCount}`,
+      ...describeClassificationStatus(classification, classificationReport),
       BILLING_NOTICE,
     ].join("\n"),
   })

@@ -102,7 +102,7 @@ async function runPrintMode() {
       "-p",
       "say hi in one word",
       "--provider",
-      "commandcode",
+      "commandcode-api",
       "--model",
       TEST_MODEL,
     ],
@@ -311,7 +311,7 @@ async function runRpcQuery() {
 
   const child = spawn(
     PI_BIN,
-    ["--mode", "rpc", "-e", EXT_PATH, "--provider", "commandcode", "--model", TEST_MODEL],
+    ["--mode", "rpc", "-e", EXT_PATH, "--provider", "commandcode-api", "--model", TEST_MODEL],
     {
       env: { ...process.env },
       stdio: ["pipe", "pipe", "pipe"],
