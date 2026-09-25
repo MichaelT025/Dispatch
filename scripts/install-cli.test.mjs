@@ -75,6 +75,7 @@ const supportFiles = [
   'extensions/piastra/worker-bridge.mjs',
   'extensions/piastra/worker-runtime.mjs',
   'extensions/piastra/worker-evidence.mjs',
+  'extensions/piastra/worker-models.mjs',
   'extensions/piastra/session-title.mjs',
   'extensions/piastra/worker-view.ts',
   'extensions/piastra/help.mjs',
