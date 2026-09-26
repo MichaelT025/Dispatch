@@ -76,7 +76,10 @@ export function replyText(message) {
  * from the lifecycle handler so the provider options are covered by tests.
  */
 export function completeTitle(model, context, ctx) {
-  return ctx.modelRegistry.complete(model, context, { maxTokens: 256 });
+  return ctx.modelRegistry.complete(model, context, {
+    maxTokens: 256,
+    sessionId: ctx.sessionManager.getSessionId()
+  });
 }
 
 /**

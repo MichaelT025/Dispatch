@@ -80,12 +80,15 @@ test('never overwrites a name, skips workers, disabled, and runs without a reply
   assert.equal(calls, 0);
 });
 
-test('title completion uses the provider-compatible production options', async () => {
+test('title completion passes the session ID for provider routing', async () => {
   const calls = [];
-  const ctx = { modelRegistry: { complete: (...args) => { calls.push(args); return 'reply'; } } };
+  const ctx = {
+    modelRegistry: { complete: (...args) => { calls.push(args); return 'reply'; } },
+    sessionManager: { getSessionId: () => 'parent-session' }
+  };
   const result = completeTitle({ id: 'fast' }, { messages: [] }, ctx);
   assert.equal(result, 'reply');
-  assert.deepEqual(calls[0][2], { maxTokens: 256 });
+  assert.deepEqual(calls[0][2], { maxTokens: 256, sessionId: 'parent-session' });
   assert.equal('temperature' in calls[0][2], false);
 });
 
